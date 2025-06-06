@@ -9,11 +9,7 @@ const server = http.createServer(app);
 const port = process.env.PORT || 9000;
 
 // Initialize Redis client
-const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    password: process.env.REDIS_PASSWORD || undefined,
-});
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 redis.on('error', (err) => console.log('Redis Client Error', err));
 
 // A simple in-memory store for active SSE client connections
