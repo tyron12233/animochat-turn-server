@@ -222,7 +222,7 @@
                 matchmakingClient = new MatchmakingClient({
                     userId: peer.id,
                     interest: interest,
-                    baseUrl: 'http://localhost:3000/matchmaking',
+                    baseUrl: 'https://animochat-turn-server.onrender.com/matchmaking',
                     onOpen: () => {
                         updateStatus('Waiting for a match...');
                     },
