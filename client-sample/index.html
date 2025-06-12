@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AnimoChat Testing</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Simple scrollbar styling for the chat log */
+        #chat-log::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #chat-log::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        #chat-log::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        #chat-log::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 font-sans flex items-center justify-center min-h-screen">
+
+    <div class="w-full max-w-md mx-auto bg-white rounded-lg shadow-xl p-6">
+        <div class="mb-4">
+            <h1 class="text-2xl font-bold text-gray-800 text-center">AnimoChat</h1>
+            <p class="text-center text-gray-500 text-sm">Peer to Peer Chat Testing</p>
+        </div>
+
+        <!-- Status Display -->
+        <div id="status-container" class="mb-4 p-3 bg-gray-50 rounded-lg text-center">
+            <p class="text-sm font-medium text-gray-600">Your User ID:</p>
+            <p id="user-id" class="text-lg font-mono text-indigo-600 break-all">Initializing...</p>
+            <p class="text-sm font-medium text-gray-600 mt-2">Status:</p>
+            <p id="status" class="text-lg font-semibold text-blue-600">Initializing PeerJS...</p>
+        </div>
+
+        <!-- Chat Area -->
+        <div id="chat-container" class="hidden">
+            <div id="chat-log"
+                class="h-64 overflow-y-auto bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4 space-y-2">
+                <!-- Chat messages will appear here -->
+            </div>
+            <form id="chat-form" class="flex space-x-2">
+                <input type="text" id="message-input" placeholder="Type a message..."
+                    class="flex-grow p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    autocomplete="off" required>
+                <button type="submit"
+                    class="bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition duration-300">Send</button>
+            </form>
+        </div>
+
+        <!-- Interest Selection -->
+        <div id="interest-container">
+            <form id="interest-form" class="flex flex-col space-y-3">
+                <label for="interest-input" class="text-md font-medium text-gray-700">Enter an interest to find a
+                    match:</label>
+                <input type="text" id="interest-input" value="GLOBAL_CHAT"
+                    class="p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    required>
+                <button type="submit" id="start-matchmaking-btn"
+                    class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-gray-400"
+                    disabled>
+                    Find Match
+                </button>
+            </form>
+        </div>
+
+    </div>
+
+
+    <script>
+        // --- MatchmakingClient Class (adapted for browser script) ---
+        class MatchmakingClient {
+            constructor(options) {
+                this.userId = options.userId;
+                this.baseUrl = options.baseUrl;
+                this.interest = options.interest;
+                this.onOpen = options.onOpen || (() => { });
+                this.onMessage = options.onMessage || (() => { });
+                this.onMatched = options.onMatched || (() => { });
+                this.onError = options.onError || (() => { });
+                this.EventSourceClass = options.EventSourceClass || window.EventSource;
+                this.eventSource = null;
+            }
+            connect() {
+                if (this.eventSource) return;
+                const url = `${this.baseUrl}?userId=${this.userId}&interest=${this.interest}`;
+                this.eventSource = new this.EventSourceClass(url);
+                this.eventSource.onopen = (event) => this.onOpen(event);
+                this.eventSource.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        this.onMessage(data);
+                        if (data.state === 'MATCHED') {
+                            this.onMatched(data);
+                            this.close();
+                        }
+                    } catch (e) {
+                        console.error("Failed to parse message data:", event.data, e);
+                    }
+                };
+                this.eventSource.onerror = (event) => {
+                    this.onError(event);
+                    this.close();
+                };
+            }
+            close() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+            }
+        }
+
+        // --- Main Application Logic ---
+        window.addEventListener('load', () => {
+            const userIdEl = document.getElementById('user-id');
+            const statusEl = document.getElementById('status');
+            const startBtn = document.getElementById('start-matchmaking-btn');
+            const interestForm = document.getElementById('interest-form');
+            const interestContainer = document.getElementById('interest-container');
+            const interestInput = document.getElementById('interest-input');
+            const chatContainer = document.getElementById('chat-container');
+            const chatLog = document.getElementById('chat-log');
+            const chatForm = document.getElementById('chat-form');
+            const messageInput = document.getElementById('message-input');
+
+            let peer = null;
+            let peerConnection = null;
+            let matchmakingClient = null;
+
+            // --- UI Helper Functions ---
+            const updateStatus = (message, color = 'blue-600') => {
+                statusEl.textContent = message;
+                statusEl.className = `text-lg font-semibold text-${color}`;
+            };
+
+            const addChatMessage = (message, sender) => {
+                const messageEl = document.createElement('div');
+                const senderClass = sender === 'You' ? 'text-right' : 'text-left';
+                const bgColor = sender === 'You' ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-800';
+                messageEl.className = `p-2 rounded-lg max-w-xs ${senderClass}`;
+                messageEl.innerHTML = `<div class="inline-block px-3 py-2 rounded-lg ${bgColor}">${message}</div>`;
+                if (sender !== 'You') {
+                    // Align to the left
+                    messageEl.style.marginRight = 'auto';
+                } else {
+                    // Align to the right
+                    messageEl.style.marginLeft = 'auto';
+                }
+                chatLog.appendChild(messageEl);
+                chatLog.scrollTop = chatLog.scrollHeight; // Auto-scroll
+            };
+
+            // --- PeerJS Connection Setup ---
+            const setupPeerConnection = (conn) => {
+                peerConnection = conn;
+                peerConnection.on('open', () => {
+                    updateStatus('Connected!', 'green-600');
+                    interestContainer.classList.add('hidden');
+                    chatContainer.classList.remove('hidden');
+                });
+                peerConnection.on('data', (data) => {
+                    addChatMessage(data, 'Stranger');
+                });
+                peerConnection.on('close', () => {
+                    updateStatus('Stranger disconnected.', 'red-600');
+                    chatContainer.classList.add('hidden');
+                    // Optionally, allow user to search again
+                });
+                peerConnection.on('error', (err) => {
+                    updateStatus('P2P Connection Error.', 'red-600');
+                    console.error('PeerJS connection error:', err);
+                });
+            };
+
+            // 1. Initialize PeerJS
+            try {
+                peer = new Peer();
+            } catch (e) {
+                updateStatus('Error initializing PeerJS', 'red-600');
+                console.error("PeerJS constructor error:", e);
+                return;
+            }
+
+            peer.on('open', (id) => {
+                userIdEl.textContent = id;
+                updateStatus('Ready to connect');
+                startBtn.disabled = false;
+            });
+
+            peer.on('connection', (conn) => {
+                updateStatus('Stranger is connecting...', 'yellow-500');
+                setupPeerConnection(conn);
+            });
+
+            peer.on('error', (err) => {
+                updateStatus('A PeerJS error occurred.', 'red-600');
+                console.error('PeerJS error:', err);
+                if (err.type === 'peer-unavailable') {
+                    addChatMessage("System: Could not connect to the other user. They may have disconnected. Please refresh to try again.", "System");
+                }
+            });
+
+            // 2. Start Matchmaking on form submit
+            interestForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                startBtn.disabled = true;
+                const interest = interestInput.value;
+                updateStatus('Connecting to matchmaking service...');
+
+                matchmakingClient = new MatchmakingClient({
+                    userId: peer.id,
+                    interest: interest,
+                    baseUrl: 'http://localhost:3000/matchmaking',
+                    onOpen: () => {
+                        updateStatus('Waiting for a match...');
+                    },
+                    onMatched: (data) => {
+                        updateStatus(`Match found! Connecting to peer...`, 'yellow-500');
+                        const conn = peer.connect(data.matchedUserId);
+                        setupPeerConnection(conn);
+                    },
+                    onMessage: (data) => {
+                        console.log('Server message:', data);
+                    },
+                    onError: () => {
+                        updateStatus('Matchmaking connection error.', 'red-600');
+                        startBtn.disabled = false;
+                    }
+                });
+
+                matchmakingClient.connect();
+            });
+
+            // 3. Handle Chat Submission
+            chatForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const message = messageInput.value;
+                if (message && peerConnection) {
+                    peerConnection.send(message);
+                    addChatMessage(message, 'You');
+                    messageInput.value = '';
+                }
+            });
+        });
+    </script>
+
+    <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+
+</body>
+
+</html>
