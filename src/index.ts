@@ -107,7 +107,7 @@ app.get('/matchmaking', async (req, res) => {
 
 app.get('/interests/popular', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*'); //
-    const topN = 5; // We want the top 5
+    const topN = 8; // We want the top 5
     try {
         console.log(`[API] Request received for top ${topN} popular interests.`);
         const popularInterests = await matchmakingService.getPopularInterests(topN);
