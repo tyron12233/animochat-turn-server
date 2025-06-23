@@ -159,7 +159,7 @@
                 <form id="interest-form" class="flex flex-col space-y-4">
                     <label for="interest-input" class="text-base font-medium text-gray-700 text-center">Enter an
                         interest to find a match</label>
-                    <input type="text" id="interest-input" value="GLOBAL_CHAT"
+                    <input type="text" id="interest-input" placeholder="e.g., Gaming, Movies..."
                         class="text-center p-3 border border-gray-300 rounded-2xl focus:outline-none focus:ring-2 focus:ring-green-500"
                         required>
                     <button type="submit" id="start-matchmaking-btn"
@@ -168,7 +168,18 @@
                         Find Match
                     </button>
                 </form>
-                <p class="text-xs text-gray-400 mt-3 text-center">Please be patient, matchmaking might be slow.</p>
+                <!-- ================================================================= -->
+                <!-- NEW: Popular Interests Section                                    -->
+                <!-- ================================================================= -->
+                <div id="popular-interests-container" class="mt-8 text-center">
+                    <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Popular Topics</h3>
+                    <div id="popular-interests-list" class="flex flex-wrap justify-center gap-2">
+                        <!-- Popular interests will be injected here by JavaScript -->
+                        <p class="text-xs text-gray-400">Loading topics...</p>
+                    </div>
+                </div>
+                <!-- ================================================================= -->
+                <p class="text-xs text-gray-400 mt-4 text-center">Please be patient, matchmaking might be slow.</p>
             </div>
 
         </div>
@@ -177,7 +188,7 @@
             <p class="text-sm font-semibold text-red-500/80">FOR TESTING PURPOSES ONLY</p>
             <p class="text-xs text-gray-500">This <b>DOES NOT</b> represent AnimoChat's final UI.</p>
             <p class="text-xs text-gray-500 mt-2">
-                <3, <a href="https://www.instagram.com/tyronscott_/" target="_blank"
+                &lt;3, <a href="https://www.instagram.com/tyronscott_/" target="_blank"
                     class="font-semibold hover:text-green-500">@tyronscott_</a>
             </p>
         </div>
@@ -200,11 +211,15 @@
             const chatForm = document.getElementById('chat-form');
             const messageInput = document.getElementById('message-input');
             const endChatBtn = document.getElementById('end-chat-btn');
+            // NEW: Popular interests elements
+            const popularInterestsList = document.getElementById('popular-interests-list');
+
 
             // --- State Variables ---
             let peer = null;
             let peerConnection = null;
             let matchmakingClient = null;
+            const API_BASE_URL = 'https://animochat-turn-server.onrender.com';
 
             // --- UI Helper Functions ---
             const updateStatus = (message, showSpinner = false) => {
@@ -221,7 +236,7 @@
                 } else {
                     const isYou = sender === 'You';
                     const bubbleClass = isYou
-                        ? 'bg-green-500 text-white rounded-t-2xl rounded-l-2xl' // Changed to green
+                        ? 'bg-green-500 text-white rounded-t-2xl rounded-l-2xl'
                         : 'bg-gray-200 text-gray-800 rounded-t-2xl rounded-r-2xl';
                     const justifyClass = isYou ? 'justify-end' : 'justify-start';
 
@@ -253,6 +268,43 @@
                 }
             }
 
+            // --- NEW: Function to fetch and display popular interests ---
+            const fetchAndDisplayPopularInterests = async () => {
+                popularInterestsList.innerHTML = '<p class="text-xs text-gray-400">Loading topics...</p>';
+                try {
+                    const response = await fetch(`${API_BASE_URL}/interests/popular`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    const interests = await response.json();
+
+                    popularInterestsList.innerHTML = ''; // Clear loading message
+
+                    if (interests.length === 0) {
+                        popularInterestsList.innerHTML = '<p class="text-xs text-gray-400">No active topics. Start one!</p>';
+                        return;
+                    }
+
+                    interests.forEach(({ interest, count }) => {
+                        const interestEl = document.createElement('button');
+                        interestEl.className = 'bg-green-100 text-green-800 text-xs font-semibold px-3 py-1.5 rounded-full hover:bg-green-200 hover:scale-105 transition-all duration-200 flex items-center gap-2';
+                        interestEl.innerHTML = `<span>${interest}</span> <span class="bg-green-200 text-green-900 text-[10px] font-bold px-1.5 py-0.5 rounded-full">${count}</span>`;
+
+                        // Add click listener to fill the input field
+                        interestEl.addEventListener('click', () => {
+                            interestInput.value = interest;
+                            interestInput.focus();
+                        });
+
+                        popularInterestsList.appendChild(interestEl);
+                    });
+
+                } catch (error) {
+                    console.error('Failed to fetch popular interests:', error);
+                    popularInterestsList.innerHTML = '<p class="text-xs text-red-500">Could not load topics.</p>';
+                }
+            };
+
             const resetToInitialState = (statusMessage = "Ready to connect") => {
                 if (peerConnection) {
                     peerConnection.close();
@@ -268,6 +320,8 @@
                 startBtn.textContent = 'Find Match';
                 chatLog.innerHTML = '';
                 updateStatus(statusMessage);
+                // Refresh popular interests when returning to this screen
+                fetchAndDisplayPopularInterests();
             };
 
             // --- PeerJS Connection Setup ---
@@ -300,11 +354,12 @@
             // 0. Handle introduction screen
             getStartedBtn.addEventListener('click', () => {
                 showScreen('matchmaking');
+                // Fetch interests when user proceeds to matchmaking screen
+                fetchAndDisplayPopularInterests();
+
                 // 1. Initialize PeerJS
                 try {
-                    peer = new Peer({
-                        // Your PeerJS options here if any
-                    });
+                    peer = new Peer();
                 } catch (e) {
                     console.error("PeerJS constructor error:", e);
                     updateStatus('Error initializing PeerJS');
@@ -345,7 +400,7 @@
                 }
 
                 startBtn.disabled = true;
-                const interest = interestInput.value.trim();
+                const interest = interestInput.value.trim().toUpperCase(); // Standardize to uppercase
                 if (!interest) {
                     updateStatus('Please enter an interest.');
                     startBtn.disabled = false;
@@ -357,7 +412,7 @@
                 class MatchmakingClient {
                     constructor(options) { this.options = options; this.es = null; }
                     connect() {
-                        const url = `${this.options.baseUrl}?userId=${this.options.userId}&interest=${this.options.interest}`;
+                        const url = `${this.options.baseUrl}/matchmaking?userId=${this.options.userId}&interest=${this.options.interest}`;
                         this.es = new EventSource(url);
                         this.es.onopen = this.options.onOpen;
                         this.es.onerror = this.options.onError;
@@ -378,7 +433,7 @@
                 matchmakingClient = new MatchmakingClient({
                     userId: peer.id,
                     interest: interest,
-                    baseUrl: 'https://animochat-turn-server.onrender.com/matchmaking',
+                    baseUrl: API_BASE_URL,
                     onOpen: () => updateStatus('Waiting for a match...', true),
                     onMatched: (data) => {
                         updateStatus(`Match found! Connecting...`, true);
