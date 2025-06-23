@@ -21,56 +21,69 @@ export class MatchmakingService {
         return `interest:${interest.toUpperCase()}`;
     }
 
+    private getPopularityKey(interest: string): string {
+        return `popular:${interest.toUpperCase()}`;
+    }
+
+
     private getNotificationChannel(userId: string): string {
         return `match_notification:${userId}`;
     }
-
     /**
-        * Attempts to find a match for a user based on a list of interests.
-        * It iterates through each interest and tries to pop a user from the queue.
-        * If no match is found, the user is added to all of their interest queues.
-        * @param userId The ID of the user searching for a match.
-        * @param interests An array of interests to match on.
-        * @returns An object with the matched user's ID and the interest they matched on, or null.
-        */
+       * Attempts to find a match for a user based on an array of interests.
+       * If a match is found, the matched user's ID and the common interest are returned.
+       * If not, the current user is added to all relevant queues.
+       * This method also records each interest usage for popularity tracking.
+       * @param userId The ID of the user searching for a match.
+       * @param interests An array of interests to match on.
+       * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
+       */
     public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interest: string; } | null> {
-        // Iterate through the user's interests to find a match
+        const pipeline = this.redis.pipeline();
+        const now = Date.now();
+
+        // Record usage for popularity tracking
+        interests.forEach(interest => {
+            const popularityKey = this.getPopularityKey(interest);
+            // Add a unique member to the sorted set with the current timestamp as the score.
+            pipeline.zadd(popularityKey, now, `${userId}:${now}`);
+        });
+
+        await pipeline.exec();
+
+        // Try to find a match in any of the user's interest queues
         for (const interest of interests) {
             const interestKey = this.getInterestKey(interest);
-            // SPOP atomically finds and removes a random member from the set.
             const potentialMatchId = await this.redis.spop(interestKey);
 
             if (potentialMatchId && potentialMatchId !== userId) {
-                // --- MATCH FOUND ---
                 console.log(`[Service] User '${userId}' matched with '${potentialMatchId}' on interest '${interest}'`);
+                // A match was found, return it immediately.
                 return { matchedUserId: potentialMatchId, interest };
-            }
-
-            // If we popped our own ID from a previous session, put it back.
-            if (potentialMatchId === userId) {
+            } else if (potentialMatchId) {
+                // If we popped our own ID, add it back to the set.
                 await this.redis.sadd(interestKey, potentialMatchId);
             }
         }
 
         // --- NO MATCH FOUND ---
+        // Add the user to all their specified interest queues to wait for a match.
         console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${interests.join(', ')}].`);
-        // If no match was found in any of the interests, add the user to all of them.
-        const pipeline = this.redis.multi();
+        const queueingPipeline = this.redis.pipeline();
         interests.forEach(interest => {
             const interestKey = this.getInterestKey(interest);
-            pipeline.sadd(interestKey, userId);
+            queueingPipeline.sadd(interestKey, userId);
         });
-        await pipeline.exec();
+        await queueingPipeline.exec();
 
         return null; // Indicates that the user is now waiting.
     }
 
     /**
-     * Publishes a match notification to a specific user's channel.
-     * The payload now includes the interest they matched on.
+     * Publishes a match notification to a specific user's channel, including the matched interest.
      * @param currentUserId The user who initiated the match.
      * @param matchedUserId The user who was waiting in the queue.
-     * @param interest The interest they matched on.
+     * @param interest The common interest they were matched on.
      */
     public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interest: string): Promise<void> {
         console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}' on interest '${interest}'`);
@@ -80,15 +93,15 @@ export class MatchmakingService {
     }
 
     /**
-     * Removes a user from all the waiting queues for their specified interests.
-     * This is used for cleanup when a client disconnects.
+     * Removes a user from the waiting queues for all their specified interests.
      * @param userId The user's ID.
-     * @param interests The array of interests to be removed from.
+     * @param interests The array of interests the user was waiting in.
      */
     public async removeUserFromQueue(userId: string, interests: string[]): Promise<void> {
         if (!interests || interests.length === 0) return;
+
         console.log(`[Service] Removing user '${userId}' from queues for interests: [${interests.join(', ')}].`);
-        const pipeline = this.redis.multi();
+        const pipeline = this.redis.pipeline();
         interests.forEach(interest => {
             const interestKey = this.getInterestKey(interest);
             pipeline.srem(interestKey, userId);
