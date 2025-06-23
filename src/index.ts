@@ -108,6 +108,19 @@ app.get('/matchmaking', async (req, res) => {
     }
 });
 
+app.get('/interests/popular', async (req, res) => {
+    const topN = 5; // We want the top 5
+    try {
+        console.log(`[API] Request received for top ${topN} popular interests.`);
+        const popularInterests = await matchmakingService.getPopularInterests(topN);
+        res.status(200).json(popularInterests);
+    } catch (error) {
+        console.error('[API] An error occurred while fetching popular interests:', error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+
 // --- Start Server ---
 app.listen(PORT, () => {
     console.log(`Matchmaking server is running on http://localhost:${PORT}`);

@@ -79,4 +79,54 @@ export class MatchmakingService {
         const interestKey = this.getInterestKey(interest);
         await this.redis.srem(interestKey, userId);
     }
+
+    /**
+    * Finds the most popular interests based on the number of users waiting in each queue.
+    * @param topN The number of top interests to return.
+    * @returns A promise that resolves to an array of popular interests with their counts.
+    */
+    public async getPopularInterests(topN: number): Promise<{ interest: string; count: number }[]> {
+        console.log(`[Service] Fetching top ${topN} popular interests.`);
+        const pattern = 'interest:*';
+        const allInterestKeys: string[] = [];
+        let cursor = '0';
+
+        // Use SCAN to safely iterate over keys without blocking the database.
+        do {
+            const [newCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+            allInterestKeys.push(...keys);
+            cursor = newCursor;
+        } while (cursor !== '0');
+
+        if (allInterestKeys.length === 0) {
+            return [];
+        }
+
+        // Use a pipeline to get the size (cardinality) of all sets efficiently.
+        const pipeline = this.redis.multi();
+        allInterestKeys.forEach(key => pipeline.scard(key));
+        const results = await pipeline.exec();
+
+        if (!results) {
+            return [];
+        }
+
+        const interestsWithCounts = allInterestKeys.map((key, index) => {
+            const countResult = results[index];
+            // Pipeline results are tuples of [error, value]
+            if (countResult && countResult[0]) {
+                console.error(`[Service] Error getting size for key ${key}:`, countResult[0]);
+                return { interest: key.split(':')[1] || 'UNKNOWN', count: 0 };
+            }
+            return {
+                interest: key.split(':')[1] || 'UNKNOWN',
+                count: countResult![1] as number,
+            };
+        });
+
+        // Sort by count descending and return the top N.
+        return interestsWithCounts
+            .sort((a, b) => b.count - a.count)
+            .slice(0, topN);
+    }
 }
