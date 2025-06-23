@@ -10,6 +10,9 @@ import type Redis from "ioredis";
 export class MatchmakingService {
     private redis: Redis;
 
+    private popularityWindowMs = 10 * 60 * 1000;
+
+
     constructor(redis: Redis) {
         this.redis = redis;
     }
@@ -94,48 +97,66 @@ export class MatchmakingService {
     }
 
     /**
-    * Finds the most popular interests based on the number of users waiting in each queue.
-    * @param topN The number of top interests to return.
-    * @returns A promise that resolves to an array of popular interests with their counts.
-    */
+     * Finds the most popular interests based on usage within a specific time window (e.g., last 10 minutes).
+     * @param topN The number of top interests to return.
+     * @returns A promise that resolves to an array of popular interests with their recent usage counts.
+     */
     public async getPopularInterests(topN: number): Promise<{ interest: string; count: number }[]> {
-        console.log(`[Service] Fetching top ${topN} popular interests.`);
-        const pattern = 'interest:*';
-        const allInterestKeys: string[] = [];
-        let cursor = '0';
+        console.log(`[Service] Fetching top ${topN} popular interests from the last ${this.popularityWindowMs / 60000} minutes.`);
 
-        // Use SCAN to safely iterate over keys without blocking the database.
+        // Find all keys that track popularity
+        const pattern = 'popular:*';
+        let cursor = '0';
+        const allPopularityKeys: string[] = [];
         do {
             const [newCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-            allInterestKeys.push(...keys);
+            allPopularityKeys.push(...keys);
             cursor = newCursor;
         } while (cursor !== '0');
 
-        if (allInterestKeys.length === 0) {
+        if (allPopularityKeys.length === 0) {
             return [];
         }
 
-        // Use a pipeline to get the size (cardinality) of all sets efficiently.
-        const pipeline = this.redis.multi();
-        allInterestKeys.forEach(key => pipeline.scard(key));
-        const results = await pipeline.exec();
+        const pipeline = this.redis.pipeline();
+        const minTimestamp = Date.now() - this.popularityWindowMs;
 
+        // For each popularity key, remove old entries and then count the remaining ones.
+        allPopularityKeys.forEach(key => {
+            // 1. Remove members with a score (timestamp) older than our window.
+            pipeline.zremrangebyscore(key, 0, minTimestamp);
+            // 2. Count the remaining members in the sorted set.
+            pipeline.zcard(key);
+        });
+
+        const results = await pipeline.exec();
         if (!results) {
             return [];
         }
 
-        const interestsWithCounts = allInterestKeys.map((key, index) => {
-            const countResult = results[index];
-            // Pipeline results are tuples of [error, value]
-            if (countResult && countResult[0]) {
-                console.error(`[Service] Error getting size for key ${key}:`, countResult[0]);
-                return { interest: key.split(':')[1] || 'UNKNOWN', count: 0 };
+        const interestsWithCounts = [];
+        for (let i = 0; i < allPopularityKeys.length; i++) {
+            // The result for ZCARD is at the (i * 2) + 1 index.
+            const countResult = results[(i * 2) + 1];
+            if (countResult && countResult[0]) { // Check for errors from the pipeline exec
+                console.error(`[Service] Error counting popularity for key ${allPopularityKeys[i]}:`, countResult[0]);
+                continue;
             }
-            return {
-                interest: key.split(':')[1] || 'UNKNOWN',
-                count: countResult![1] as number,
-            };
-        });
+
+            const count = countResult![1] as number;
+            // Only include interests that have been active recently.
+            if (count > 0) {
+                let interestName = 'UNKNOWN';
+                if (allPopularityKeys && allPopularityKeys[i]) {
+                    const current = allPopularityKeys[i];
+                    // Extract the interest name from the key, e.g., "popular:interestName".
+                    if (current) {
+                        interestName = current.split(':')[1] || 'UNKNOWN';
+                    }
+                }
+                interestsWithCounts.push({ interest: interestName, count });
+            }
+        }
 
         // Sort by count descending and return the top N.
         return interestsWithCounts
