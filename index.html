@@ -76,6 +76,49 @@
         .fade-in {
             animation: fadeIn 0.5s ease-out forwards;
         }
+
+        /* NEW: Styles for the interest tags/bubbles */
+        .tag {
+            display: inline-flex;
+            align-items: center;
+            background-color: #16a34a;
+            /* A rich green */
+            color: white;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            margin: 2px;
+            font-weight: 500;
+            font-size: 14px;
+            cursor: default;
+            transition: all 0.2s ease;
+        }
+
+        .tag:hover {
+            background-color: #15803d;
+            /* Darker green on hover */
+        }
+
+        .tag button {
+            margin-left: 8px;
+            border: none;
+            background-color: rgba(0, 0, 0, 0.1);
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            padding: 0;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s ease;
+        }
+
+        .tag button:hover {
+            background-color: rgba(0, 0, 0, 0.3);
+        }
     </style>
 </head>
 
@@ -96,8 +139,7 @@
             <div id="intro-container" class="text-center fade-in">
                 <h2 class="text-lg font-bold text-gray-800 mb-2">Welcome to the P2P Test!</h2>
                 <p class="text-sm text-gray-600 mb-4">
-                    We're testing a new Peer-to-Peer (P2P) chat system. This is a big step away from using a central
-                    server like Supabase for messaging.
+                    Enter one or more interests separated by commas to find someone to chat with.
                 </p>
                 <div class="text-left text-sm bg-green-50 p-3 rounded-xl mb-6 border border-green-200">
                     <h3 class="font-semibold text-green-800 mb-1">Why the change?</h3>
@@ -156,30 +198,29 @@
             </div>
 
             <div id="interest-container" class="hidden">
-                <form id="interest-form" class="flex flex-col space-y-4">
-                    <label for="interest-input" class="text-base font-medium text-gray-700 text-center">Enter an
-                        interest to find a match</label>
-                    <input type="text" id="interest-input" placeholder="e.g., Gaming, Movies..."
-                        class="text-center p-3 border border-gray-300 rounded-2xl focus:outline-none focus:ring-2 focus:ring-green-500"
-                        required>
-                    <button type="submit" id="start-matchmaking-btn"
-                        class="bg-green-500 text-white font-bold py-3 px-4 rounded-2xl hover:bg-green-600 transition-all duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                        disabled>
-                        Find Match
-                    </button>
-                </form>
-                <!-- ================================================================= -->
-                <!-- NEW: Popular Interests Section                                    -->
-                <!-- ================================================================= -->
+                <!-- UPDATED: Interest input is now a tag container -->
+                <div class="text-center mb-4">
+                    <label class="text-base font-medium text-gray-700">Enter your interests</label>
+                    <div id="tags-container"
+                        class="mt-2 p-2 border border-gray-300 rounded-2xl bg-white min-h-[48px] flex flex-wrap gap-1 items-center cursor-text"
+                        onclick="document.getElementById('interest-input').focus()">
+                        <!-- Tags will be dynamically inserted here -->
+                        <input type="text" id="interest-input" placeholder="Type & press Enter..."
+                            class="flex-grow p-1 border-none outline-none bg-transparent">
+                    </div>
+                </div>
+                <button id="start-matchmaking-btn"
+                    class="w-full bg-green-500 text-white font-bold py-3 px-4 rounded-2xl hover:bg-green-600 transition-all duration-300 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    disabled>
+                    Find Match
+                </button>
+
                 <div id="popular-interests-container" class="mt-8 text-center">
                     <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">Popular Topics</h3>
                     <div id="popular-interests-list" class="flex flex-wrap justify-center gap-2">
-                        <!-- Popular interests will be injected here by JavaScript -->
                         <p class="text-xs text-gray-400">Loading topics...</p>
                     </div>
                 </div>
-                <!-- ================================================================= -->
-                <p class="text-xs text-gray-400 mt-4 text-center">Please be patient, matchmaking might be slow.</p>
             </div>
 
         </div>
@@ -203,22 +244,23 @@
             const statusContainer = document.getElementById('status-container');
             const statusEl = document.getElementById('status');
             const startBtn = document.getElementById('start-matchmaking-btn');
-            const interestForm = document.getElementById('interest-form');
             const interestContainer = document.getElementById('interest-container');
-            const interestInput = document.getElementById('interest-input');
             const chatContainer = document.getElementById('chat-container');
             const chatLog = document.getElementById('chat-log');
             const chatForm = document.getElementById('chat-form');
             const messageInput = document.getElementById('message-input');
             const endChatBtn = document.getElementById('end-chat-btn');
-            // NEW: Popular interests elements
             const popularInterestsList = document.getElementById('popular-interests-list');
 
+            // UPDATED: Elements for tag input
+            const tagsContainer = document.getElementById('tags-container');
+            const interestInput = document.getElementById('interest-input');
 
             // --- State Variables ---
             let peer = null;
             let peerConnection = null;
             let matchmakingClient = null;
+            let currentInterests = new Set(); // Use a Set for unique interests
             const API_BASE_URL = 'https://animochat-turn-server.onrender.com';
 
             // --- UI Helper Functions ---
@@ -227,12 +269,16 @@
                 statusEl.innerHTML = `${spinnerHtml}<p>${message}</p>`;
             };
 
-            const addChatMessage = (message, sender, isSystem = false) => {
+            const addChatMessage = (message, sender, isSystem = false, matchedOn = null) => {
                 const messageEl = document.createElement('div');
                 messageEl.classList.add('fade-in');
                 if (isSystem) {
                     messageEl.className = 'text-center fade-in';
-                    messageEl.innerHTML = `<span class="text-xs text-gray-400 bg-gray-100 rounded-full px-3 py-1">${message}</span>`;
+                    let content = `<span class="text-xs text-gray-400 bg-gray-100 rounded-full px-3 py-1">${message}</span>`;
+                    if (matchedOn) {
+                        content += `<br><span class="text-xs text-green-600 font-semibold bg-green-100 rounded-full px-3 py-1 mt-1 inline-block">Matched on: ${matchedOn}</span>`;
+                    }
+                    messageEl.innerHTML = content;
                 } else {
                     const isYou = sender === 'You';
                     const bubbleClass = isYou
@@ -248,38 +294,66 @@
             };
 
             const showScreen = (screen) => {
-                // Hide all main screens
                 introContainer.classList.add('hidden');
                 statusContainer.classList.add('hidden');
                 interestContainer.classList.add('hidden');
                 chatContainer.classList.add('hidden');
 
-                // Show the requested screen
                 if (screen === 'intro') introContainer.classList.remove('hidden');
-                if (screen === 'matchmaking') {
-                    statusContainer.classList.remove('hidden');
-                    interestContainer.classList.remove('hidden');
-                    interestContainer.classList.add('fade-in');
-                }
-                if (screen === 'chat') {
-                    statusContainer.classList.remove('hidden');
-                    chatContainer.classList.remove('hidden');
-                    chatContainer.classList.add('fade-in');
-                }
+                if (screen === 'matchmaking') { statusContainer.classList.remove('hidden'); interestContainer.classList.remove('hidden'); interestContainer.classList.add('fade-in'); }
+                if (screen === 'chat') { statusContainer.classList.remove('hidden'); chatContainer.classList.remove('hidden'); chatContainer.classList.add('fade-in'); }
             }
 
-            // --- NEW: Function to fetch and display popular interests ---
+            // --- NEW: Functions to manage interest tags ---
+            const renderTags = () => {
+                // Clear all DOM elements that are tags, leaving the input
+                while (tagsContainer.firstChild && tagsContainer.firstChild !== interestInput) {
+                    tagsContainer.removeChild(tagsContainer.firstChild);
+                }
+                // Re-create tags from the Set
+                currentInterests.forEach(interest => {
+                    const tagEl = document.createElement('span');
+                    tagEl.className = 'tag';
+                    tagEl.textContent = interest;
+                    const removeBtn = document.createElement('button');
+                    removeBtn.innerHTML = '&times;';
+                    removeBtn.onclick = (e) => {
+                        e.stopPropagation(); // Prevent the container's click event
+                        currentInterests.delete(interest);
+                        renderTags();
+                    };
+                    tagEl.appendChild(removeBtn);
+                    // Insert the new tag before the input field
+                    tagsContainer.insertBefore(tagEl, interestInput);
+                });
+            };
+
+            const addInterest = (interestStr) => {
+                const cleanedInterest = interestStr.trim().toUpperCase();
+                if (cleanedInterest && !currentInterests.has(cleanedInterest)) {
+                    currentInterests.add(cleanedInterest);
+                    renderTags();
+                }
+                interestInput.value = ''; // Clear input after adding
+            };
+
+            // Event listener for the input field to add tags on Enter
+            interestInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault(); // Prevent form submission
+                    addInterest(interestInput.value);
+                }
+            });
+
+
             const fetchAndDisplayPopularInterests = async () => {
                 popularInterestsList.innerHTML = '<p class="text-xs text-gray-400">Loading topics...</p>';
                 try {
                     const response = await fetch(`${API_BASE_URL}/interests/popular`);
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! Status: ${response.status}`);
-                    }
+                    if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
                     const interests = await response.json();
 
-                    popularInterestsList.innerHTML = ''; // Clear loading message
-
+                    popularInterestsList.innerHTML = '';
                     if (interests.length === 0) {
                         popularInterestsList.innerHTML = '<p class="text-xs text-gray-400">No active topics. Start one!</p>';
                         return;
@@ -290,9 +364,9 @@
                         interestEl.className = 'bg-green-100 text-green-800 text-xs font-semibold px-3 py-1.5 rounded-full hover:bg-green-200 hover:scale-105 transition-all duration-200 flex items-center gap-2';
                         interestEl.innerHTML = `<span>${interest}</span> <span class="bg-green-200 text-green-900 text-[10px] font-bold px-1.5 py-0.5 rounded-full">${count}</span>`;
 
-                        // Add click listener to fill the input field
+                        // UPDATED: Clicking a popular topic now adds it as a tag
                         interestEl.addEventListener('click', () => {
-                            interestInput.value = interest;
+                            addInterest(interest);
                             interestInput.focus();
                         });
 
@@ -306,58 +380,38 @@
             };
 
             const resetToInitialState = (statusMessage = "Ready to connect") => {
-                if (peerConnection) {
-                    peerConnection.close();
-                    peerConnection = null;
-                }
-                if (matchmakingClient) {
-                    matchmakingClient.close();
-                    matchmakingClient = null;
-                }
+                if (peerConnection) { peerConnection.close(); peerConnection = null; }
+                if (matchmakingClient) { matchmakingClient.close(); matchmakingClient = null; }
                 endChatBtn.classList.add('hidden');
                 showScreen('matchmaking');
                 startBtn.disabled = !peer || !peer.id;
-                startBtn.textContent = 'Find Match';
                 chatLog.innerHTML = '';
                 updateStatus(statusMessage);
-                // Refresh popular interests when returning to this screen
+
+                // UPDATED: Clear interests and re-render tags
+                currentInterests.clear();
+                renderTags();
                 fetchAndDisplayPopularInterests();
             };
 
-            // --- PeerJS Connection Setup ---
-            const setupPeerConnection = (conn) => {
+            const setupPeerConnection = (conn, matchedOn) => {
                 peerConnection = conn;
                 peerConnection.on('open', () => {
                     updateStatus('Connected to Stranger!');
                     showScreen('chat');
                     endChatBtn.classList.remove('hidden');
                     messageInput.focus();
-                    addChatMessage('You are now connected.', 'System', true);
+                    addChatMessage('You are now connected.', 'System', true, matchedOn);
                 });
-                peerConnection.on('data', (data) => {
-                    addChatMessage(data, 'Stranger');
-                });
-                peerConnection.on('close', () => {
-                    addChatMessage('Stranger has disconnected.', 'System', true);
-                    resetToInitialState('Stranger disconnected. Find a new match.');
-                });
-                peerConnection.on('error', (err) => {
-                    console.error('PeerJS connection error:', err);
-                    updateStatus('P2P Connection Error.');
-                    addChatMessage(`Connection error: ${err.type}`, 'System', true);
-                    resetToInitialState('Connection lost. Find a new match.');
-                });
+                peerConnection.on('data', (data) => addChatMessage(data, 'Stranger'));
+                peerConnection.on('close', () => { addChatMessage('Stranger has disconnected.', 'System', true); resetToInitialState('Stranger disconnected. Find a new match.'); });
+                peerConnection.on('error', (err) => { console.error('PeerJS connection error:', err); updateStatus('P2P Connection Error.'); addChatMessage(`Connection error: ${err.type}`, 'System', true); resetToInitialState('Connection lost. Find a new match.'); });
             };
 
-            // --- Main Application Logic ---
-
-            // 0. Handle introduction screen
             getStartedBtn.addEventListener('click', () => {
                 showScreen('matchmaking');
-                // Fetch interests when user proceeds to matchmaking screen
                 fetchAndDisplayPopularInterests();
 
-                // 1. Initialize PeerJS
                 try {
                     peer = new Peer();
                 } catch (e) {
@@ -373,8 +427,11 @@
                 });
 
                 peer.on('connection', (conn) => {
-                    updateStatus('Stranger is connecting...', true);
-                    setupPeerConnection(conn);
+                    conn.on('open', () => { // Wait for metadata to be sent
+                        const matchedOn = conn.metadata?.interest || 'an unknown topic';
+                        updateStatus('Stranger is connecting...', true);
+                        setupPeerConnection(conn, matchedOn);
+                    });
                 });
 
                 peer.on('error', (err) => {
@@ -390,29 +447,30 @@
                 });
             });
 
-
-            // 2. Start Matchmaking on form submit
-            interestForm.addEventListener('submit', (e) => {
-                e.preventDefault();
+            // UPDATED: Start button now uses the currentInterests Set
+            startBtn.addEventListener('click', () => {
                 if (!peer || !peer.id) {
                     updateStatus('PeerJS not ready. Please wait.', false);
                     return;
                 }
 
-                startBtn.disabled = true;
-                const interest = interestInput.value.trim().toUpperCase(); // Standardize to uppercase
-                if (!interest) {
-                    updateStatus('Please enter an interest.');
-                    startBtn.disabled = false;
-                    return;
+                if (currentInterests.size === 0) {
+                    // Also check the input field in case the user didn't press enter
+                    addInterest(interestInput.value);
+                    if (currentInterests.size === 0) {
+                        updateStatus('Please enter at least one interest.');
+                        return;
+                    }
                 }
 
+                startBtn.disabled = true;
                 updateStatus('Finding a match...', true);
 
                 class MatchmakingClient {
                     constructor(options) { this.options = options; this.es = null; }
                     connect() {
-                        const url = `${this.options.baseUrl}/matchmaking?userId=${this.options.userId}&interest=${this.options.interest}`;
+                        const interestsParam = Array.from(this.options.interests).join(',');
+                        const url = `${this.options.baseUrl}/matchmaking?userId=${this.options.userId}&interest=${interestsParam}`;
                         this.es = new EventSource(url);
                         this.es.onopen = this.options.onOpen;
                         this.es.onerror = this.options.onError;
@@ -432,13 +490,13 @@
 
                 matchmakingClient = new MatchmakingClient({
                     userId: peer.id,
-                    interest: interest,
+                    interests: currentInterests,
                     baseUrl: API_BASE_URL,
                     onOpen: () => updateStatus('Waiting for a match...', true),
                     onMatched: (data) => {
                         updateStatus(`Match found! Connecting...`, true);
-                        const conn = peer.connect(data.matchedUserId);
-                        setupPeerConnection(conn);
+                        const conn = peer.connect(data.matchedUserId, { metadata: { interest: data.interest } });
+                        setupPeerConnection(conn, data.interest);
                     },
                     onMessage: (data) => console.log('Server message:', data),
                     onError: () => {
@@ -449,7 +507,6 @@
                 matchmakingClient.connect();
             });
 
-            // 3. Handle Chat Submission
             chatForm.addEventListener('submit', (e) => {
                 e.preventDefault();
                 const message = messageInput.value.trim();
@@ -460,13 +517,11 @@
                 }
             });
 
-            // 4. Handle End Chat button
             endChatBtn.addEventListener('click', () => {
                 addChatMessage('You have ended the chat.', 'System', true);
                 resetToInitialState('Chat ended. Find a new match.');
             });
 
-            // Initial screen setup
             showScreen('intro');
         });
     </script>
