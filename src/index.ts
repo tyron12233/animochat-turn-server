@@ -40,9 +40,9 @@ app.get('/matchmaking', async (req, res) => {
         return;
     }
 
-    if (!interest || typeof interest !== 'string') {
-        interest = 'COLLEGE';
-    }
+    const interests = (typeof interest === 'string' && interest.length > 0)
+        ? interest.split(',').map(i => i.trim().toUpperCase())
+        : ['GLOBAL_CHAT'];
 
     const notificationChannel = `match_notification:${userId}`;
 
@@ -67,10 +67,10 @@ app.get('/matchmaking', async (req, res) => {
         subscriber.on('message', messageHandler);
     });
 
-    // --- Cleanup logic for when the client disconnects ---
+
     const cleanup = () => {
         console.log(`[${userId}] Cleaning up SSE resources.`);
-        matchmakingService.removeUserFromQueue(userId, interest);
+        matchmakingService.removeUserFromQueue(userId, interests);
         subscriber.unsubscribe(notificationChannel);
         subscriber.removeListener('message', messageHandler);
     };
@@ -82,23 +82,20 @@ app.get('/matchmaking', async (req, res) => {
 
     // --- Execute Matchmaking Logic using the Service ---
     try {
-        const matchedUserId = await matchmakingService.findOrQueueUser(userId, interest);
+        const matchResult = await matchmakingService.findOrQueueUser(userId, interests);
 
-        if (matchedUserId) {
-            // --- MATCH FOUND ---
-            // 1. Notify the other user (who was waiting) via Pub/Sub
-            await matchmakingService.notifyUserOfMatch(userId, matchedUserId);
+        if (matchResult) {
+            const { matchedUserId, interest: matchedInterest } = matchResult;
+            // Notify the other user (who was waiting)
+            await matchmakingService.notifyUserOfMatch(userId, matchedUserId, matchedInterest);
 
-            // 2. Notify the current user immediately via this SSE stream
-            const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: matchedUserId });
+            // Notify the current user immediately
+            const payload = JSON.stringify({ state: 'MATCHED', matchedUserId, interest: matchedInterest });
             res.write(`data: ${payload}\n\n`);
 
-            // 3. End the connection since the job is done.
             cleanup();
             res.end();
         } else {
-            // --- NO MATCH FOUND, USER IS WAITING ---
-            // Send a waiting message to the client; the connection is kept open.
             res.write(`data: ${JSON.stringify({ state: 'WAITING' })}\n\n`);
         }
     } catch (error) {

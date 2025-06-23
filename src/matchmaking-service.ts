@@ -23,61 +23,74 @@ export class MatchmakingService {
     }
 
     /**
-     * Attempts to find an available user in the queue for a given interest.
-     * If a match is found, their ID is returned.
-     * If not, the current user is added to the queue and null is returned.
-     * @param userId The ID of the user searching for a match.
-     * @param interest The interest to match on.
-     * @returns The matched user's ID, or null if the user was added to the queue.
-     */
-    public async findOrQueueUser(userId: string, interest: string): Promise<string | null> {
-        const interestKey = this.getInterestKey(interest);
+        * Attempts to find a match for a user based on a list of interests.
+        * It iterates through each interest and tries to pop a user from the queue.
+        * If no match is found, the user is added to all of their interest queues.
+        * @param userId The ID of the user searching for a match.
+        * @param interests An array of interests to match on.
+        * @returns An object with the matched user's ID and the interest they matched on, or null.
+        */
+    public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interest: string; } | null> {
+        // Iterate through the user's interests to find a match
+        for (const interest of interests) {
+            const interestKey = this.getInterestKey(interest);
+            // SPOP atomically finds and removes a random member from the set.
+            const potentialMatchId = await this.redis.spop(interestKey);
 
-        // SPOP atomically finds and removes a random member from the set.
-        const potentialMatchId = await this.redis.spop(interestKey);
-
-        if (potentialMatchId && potentialMatchId !== userId) {
-            // --- MATCH FOUND ---
-            console.log(`[Service] User '${userId}' matched with '${potentialMatchId}'`);
-            return potentialMatchId;
-        } else {
-            // --- NO MATCH FOUND ---
-            if (potentialMatchId) {
-                // This can happen if we pop our own ID from a previous, unclean shutdown.
-                // We add it back to the set so it can be matched with someone else.
-                await this.redis.sadd(interestKey, potentialMatchId);
+            if (potentialMatchId && potentialMatchId !== userId) {
+                // --- MATCH FOUND ---
+                console.log(`[Service] User '${userId}' matched with '${potentialMatchId}' on interest '${interest}'`);
+                return { matchedUserId: potentialMatchId, interest };
             }
 
-            console.log(`[Service] No match for '${userId}'. Adding to queue for interest "${interest}".`);
-            // Add the current user to the waiting pool.
-            await this.redis.sadd(interestKey, userId);
-
-            return null; // Indicates that the user is now waiting.
+            // If we popped our own ID from a previous session, put it back.
+            if (potentialMatchId === userId) {
+                await this.redis.sadd(interestKey, potentialMatchId);
+            }
         }
+
+        // --- NO MATCH FOUND ---
+        console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${interests.join(', ')}].`);
+        // If no match was found in any of the interests, add the user to all of them.
+        const pipeline = this.redis.multi();
+        interests.forEach(interest => {
+            const interestKey = this.getInterestKey(interest);
+            pipeline.sadd(interestKey, userId);
+        });
+        await pipeline.exec();
+
+        return null; // Indicates that the user is now waiting.
     }
 
     /**
      * Publishes a match notification to a specific user's channel.
+     * The payload now includes the interest they matched on.
      * @param currentUserId The user who initiated the match.
      * @param matchedUserId The user who was waiting in the queue.
+     * @param interest The interest they matched on.
      */
-    public async notifyUserOfMatch(currentUserId: string, matchedUserId: string): Promise<void> {
-        console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}'`);
-        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId });
+    public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interest: string): Promise<void> {
+        console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}' on interest '${interest}'`);
+        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interest: interest });
         const channel = this.getNotificationChannel(matchedUserId);
         await this.redis.publish(channel, payload);
     }
 
     /**
-     * Removes a user from the waiting queue for a specific interest.
+     * Removes a user from all the waiting queues for their specified interests.
      * This is used for cleanup when a client disconnects.
      * @param userId The user's ID.
-     * @param interest The user's interest.
+     * @param interests The array of interests to be removed from.
      */
-    public async removeUserFromQueue(userId: string, interest: string): Promise<void> {
-        console.log(`[Service] Removing user '${userId}' from queue for interest '${interest}'.`);
-        const interestKey = this.getInterestKey(interest);
-        await this.redis.srem(interestKey, userId);
+    public async removeUserFromQueue(userId: string, interests: string[]): Promise<void> {
+        if (!interests || interests.length === 0) return;
+        console.log(`[Service] Removing user '${userId}' from queues for interests: [${interests.join(', ')}].`);
+        const pipeline = this.redis.multi();
+        interests.forEach(interest => {
+            const interestKey = this.getInterestKey(interest);
+            pipeline.srem(interestKey, userId);
+        });
+        await pipeline.exec();
     }
 
     /**
