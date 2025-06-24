@@ -46,7 +46,7 @@ export class MatchmakingService {
         interests.forEach(interest => {
             const popularityKey = this.getPopularityKey(interest);
             // Add a unique member to the sorted set with the current timestamp as the score.
-            pipeline.zadd(popularityKey, now, `${userId}:${now}`);
+            pipeline.zadd(popularityKey, now, userId);
         });
 
         await pipeline.exec();
