@@ -51,8 +51,9 @@ export class MatchmakingService {
 
         await pipeline.exec();
 
+        const shuffledInterests = interests.sort(() => Math.random() - 0.5);
         // Try to find a match in any of the user's interest queues
-        for (const interest of interests) {
+        for (const interest of shuffledInterests) {
             const interestKey = this.getInterestKey(interest);
             const potentialMatchId = await this.redis.spop(interestKey);
 
