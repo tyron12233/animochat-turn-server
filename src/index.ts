@@ -43,6 +43,10 @@ const matchmakingService = new MatchmakingService(redis, getNextChatServer);
 
 // maintenance end point
 app.get('/maintenance', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-cache');
+
     if (MAINTENANCE_MODE) {
         res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
     } else {
