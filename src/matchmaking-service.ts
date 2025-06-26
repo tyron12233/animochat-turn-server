@@ -5,6 +5,7 @@
 // It is unaware of HTTP requests or responses, making it reusable and testable.
 
 import type Redis from "ioredis";
+import { createHash } from 'crypto';
 
 // =================================================================================
 export class MatchmakingService {
@@ -12,9 +13,12 @@ export class MatchmakingService {
 
     private popularityWindowMs = 10 * 60 * 1000;
 
+    private getNextChatServer: () => string;
 
-    constructor(redis: Redis) {
+
+    constructor(redis: Redis, getNextChatServer: () => string) {
         this.redis = redis;
+        this.getNextChatServer = getNextChatServer;
     }
 
     private getInterestKey(interest: string): string {
@@ -47,7 +51,7 @@ export class MatchmakingService {
        * @param interests An array of interests to match on.
        * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
        */
-    public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interests: string[]; } | null> {
+    public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interests: string[]; chatId: string; chatServerUrl: string; } | null> {
         const pipeline = this.redis.pipeline();
         const now = Date.now();
 
@@ -82,6 +86,14 @@ export class MatchmakingService {
                     continue;
                 }
 
+                // Create a consistent, unique chatId by sorting the user IDs alphabetically and hashing them.
+                // This ensures that for any pair (A, B), the chatId is the same regardless of who initiated the match.
+                const ids = [userId, potentialMatchId].sort();
+                const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
+
+                const chatServerUrl = this.getNextChatServer();
+
+
                 // 3. Since a match is confirmed, clean up all traces of the matched user from the queueing system.
                 const cleanupPipeline = this.redis.pipeline();
                 matchedUserInterests.forEach(i => {
@@ -90,11 +102,9 @@ export class MatchmakingService {
                 // Also remove their interest list tracking key.
                 cleanupPipeline.del(matchedUserInterestsKey);
                 await cleanupPipeline.exec();
+                console.log(`[Service] Finalized match for '${userId}' with '${potentialMatchId}'. ChatID: ${chatId}. Common interests: [${commonInterests.join(', ')}]`);
 
-                console.log(`[Service] Finalized match for '${userId}' with '${potentialMatchId}'. Common interests: [${commonInterests.join(', ')}]`);
-
-                // 4. Return the comprehensive match details.
-                return { matchedUserId: potentialMatchId, interests: commonInterests };
+                return { matchedUserId: potentialMatchId, interests: commonInterests, chatId, chatServerUrl };
 
             } else if (potentialMatchId) {
                 // We popped our own ID by chance, put it back into the set.
@@ -122,17 +132,15 @@ export class MatchmakingService {
     }
 
     /**
-      * Publishes a match notification to a specific user's channel.
-      * @param currentUserId The user who initiated the match.
-      * @param matchedUserId The user who was waiting in the queue.
-      * @param interests The array of common interests they were matched on.
+      * Publishes a match notification, now including the assigned chat server URL.
+      * @param chatId The unique identifier for their chat session.
+      * @param chatServerUrl The URL of the chat server assigned to this match.
       */
-    public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interests: string[]): Promise<void> {
-        console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}' on interests [${interests.join(', ')}]`);
+    public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interests: string[], chatId: string, chatServerUrl: string): Promise<void> {
+        console.log(`[Service] Notifying '${matchedUserId}' about match with ChatID '${chatId}' on server '${chatServerUrl}'`);
         const interest = interests.join(",");
-        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interest: interest });
-        const channel = this.getNotificationChannel(matchedUserId);
-        await this.redis.publish(channel, payload);
+        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interest, chatId, chatServerUrl });
+        await this.redis.publish(this.getNotificationChannel(matchedUserId), payload);
     }
 
     /**

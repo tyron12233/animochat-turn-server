@@ -18,7 +18,30 @@ subscriber.on('connect', () => console.log('Redis client connected for subscript
 redis.on('error', (err) => console.error('Redis command client error', err));
 subscriber.on('error', (err) => console.error('Redis subscriber client error', err));
 
-const matchmakingService = new MatchmakingService(redis);
+
+
+// --- (NEW) Chat Server Configuration ---
+// Retrieves a comma-separated list of chat server URLs from environment variables.
+// Defaults to a single local server if not provided.
+const CHAT_SERVER_URLS = [
+    "https://animochat-chat-server.onrender.com",
+];
+let currentServerIndex = 0;
+
+/**
+ * (NEW) Implements a simple round-robin strategy to select the next chat server.
+ * This function distributes the load evenly across the available servers.
+ * @returns {string} The URL of the next chat server to use.
+ */
+const getNextChatServer = (): string => {
+    const serverUrl = CHAT_SERVER_URLS[currentServerIndex];
+    // Move to the next server in the list for the subsequent call.
+    currentServerIndex = (currentServerIndex + 1) % CHAT_SERVER_URLS.length;
+    return serverUrl!;
+};
+
+const matchmakingService = new MatchmakingService(redis, getNextChatServer);
+
 
 
 // =================================================================================
@@ -85,12 +108,12 @@ app.get('/matchmaking', async (req, res) => {
         const matchResult = await matchmakingService.findOrQueueUser(userId, interests);
 
         if (matchResult) {
-            const { matchedUserId, interests: matchedInterests } = matchResult;
+            const { matchedUserId, interests: matchedInterests, chatId, chatServerUrl } = matchResult;
 
-            await matchmakingService.notifyUserOfMatch(userId, matchedUserId, matchedInterests);
+            await matchmakingService.notifyUserOfMatch(userId, matchedUserId, matchedInterests, chatId, chatServerUrl);
 
             const interestString = matchedInterests.join(',');
-            const payload = JSON.stringify({ state: 'MATCHED', matchedUserId, interest: interestString });
+            const payload = JSON.stringify({ state: 'MATCHED', matchedUserId, interest: interestString, chatId: chatId, chatServerUrl: chatServerUrl });
             res.write(`data: ${payload}\n\n`);
 
             cleanup();
