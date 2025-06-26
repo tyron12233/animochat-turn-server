@@ -129,8 +129,8 @@ export class MatchmakingService {
       */
     public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interests: string[]): Promise<void> {
         console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}' on interests [${interests.join(', ')}]`);
-        // The payload now contains an array of interests.
-        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interests: interests });
+        const interest = interests.join(",");
+        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interest: interest });
         const channel = this.getNotificationChannel(matchedUserId);
         await this.redis.publish(channel, payload);
     }
