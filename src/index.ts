@@ -7,7 +7,7 @@ import { MatchmakingService } from './matchmaking-service';
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
-const MAINTENANCE_MODE = true;
+const MAINTENANCE_MODE = false;
 
 const app = express();
 app.use(express.json());
@@ -134,7 +134,7 @@ app.get('/matchmaking', async (req, res) => {
 });
 
 app.get('/interests/popular', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*'); //
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
     if (MAINTENANCE_MODE) {
         res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
