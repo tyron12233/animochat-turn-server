@@ -7,6 +7,8 @@ import { MatchmakingService } from './matchmaking-service';
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
+const MAINTENANCE_MODE = true;
+
 const app = express();
 app.use(express.json());
 
@@ -18,13 +20,10 @@ subscriber.on('connect', () => console.log('Redis client connected for subscript
 redis.on('error', (err) => console.error('Redis command client error', err));
 subscriber.on('error', (err) => console.error('Redis subscriber client error', err));
 
-
-
-// --- (NEW) Chat Server Configuration ---
-// Retrieves a comma-separated list of chat server URLs from environment variables.
-// Defaults to a single local server if not provided.
+// =================================================================================
 const CHAT_SERVER_URLS = [
     "https://animochat-chat-server.onrender.com",
+    "https://animochat-chat-server-1.onrender.com"
 ];
 let currentServerIndex = 0;
 
@@ -54,6 +53,12 @@ app.get('/matchmaking', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*'); // For CORS
+
+    if (MAINTENANCE_MODE) {
+        res.status(503).write(`data: ${JSON.stringify({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' })}\n\n`);
+        res.end();
+        return;
+    }
 
     // --- Validate Input ---
     let { userId, interest } = req.query;
@@ -130,7 +135,13 @@ app.get('/matchmaking', async (req, res) => {
 
 app.get('/interests/popular', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*'); //
-    const topN = 8; // We want the top 5
+
+    if (MAINTENANCE_MODE) {
+        res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
+        return;
+    }
+
+    const topN = 8;
     try {
         console.log(`[API] Request received for top ${topN} popular interests.`);
         const popularInterests = await matchmakingService.getPopularInterests(topN);
@@ -142,7 +153,6 @@ app.get('/interests/popular', async (req, res) => {
 });
 
 
-// --- Start Server ---
 app.listen(PORT, () => {
     console.log(`Matchmaking server is running on http://localhost:${PORT}`);
 });
