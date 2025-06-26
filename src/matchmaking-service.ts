@@ -25,6 +25,15 @@ export class MatchmakingService {
         return `popular:${interest.toUpperCase()}`;
     }
 
+    /**
+     * (NEW) Creates a Redis key to store a user's full list of interests while they are in the queue.
+     * @param userId The user's ID.
+     * @returns The Redis key as a string.
+     */
+    private getUserInterestsKey(userId: string): string {
+        return `user_interests:${userId}`;
+    }
+
 
     private getNotificationChannel(userId: string): string {
         return `match_notification:${userId}`;
@@ -38,31 +47,57 @@ export class MatchmakingService {
        * @param interests An array of interests to match on.
        * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
        */
-    public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interest: string; } | null> {
+    public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interests: string[]; } | null> {
         const pipeline = this.redis.pipeline();
         const now = Date.now();
 
-        // Record usage for popularity tracking
         interests.forEach(interest => {
-            const popularityKey = this.getPopularityKey(interest);
-            // Add a unique member to the sorted set with the current timestamp as the score.
-            pipeline.zadd(popularityKey, now, userId);
+            pipeline.zadd(this.getPopularityKey(interest), now, userId);
         });
-
         await pipeline.exec();
 
         const shuffledInterests = interests.sort(() => Math.random() - 0.5);
-        // Try to find a match in any of the user's interest queues
+
         for (const interest of shuffledInterests) {
             const interestKey = this.getInterestKey(interest);
+            // Atomically pop a potential match from one of the interest queues.
             const potentialMatchId = await this.redis.spop(interestKey);
 
             if (potentialMatchId && potentialMatchId !== userId) {
-                console.log(`[Service] User '${userId}' matched with '${potentialMatchId}' on interest '${interest}'`);
-                // A match was found, return it immediately.
-                return { matchedUserId: potentialMatchId, interest };
+                // --- MATCH FOUND ---
+                console.log(`[Service] User '${userId}' got an initial match with '${potentialMatchId}' on interest '${interest}'`);
+
+                // 1. Get the matched user's full list of interests from Redis.
+                const matchedUserInterestsKey = this.getUserInterestsKey(potentialMatchId);
+                const matchedUserInterests = await this.redis.smembers(matchedUserInterestsKey);
+
+                // 2. Find all common interests by calculating the intersection of the two lists.
+                const currentUserInterestsSet = new Set(interests);
+                const commonInterests = matchedUserInterests.filter(i => currentUserInterestsSet.has(i));
+
+                // This is a safety check. If the data is consistent, this should not be empty.
+                if (commonInterests.length === 0) {
+                    // If something went wrong and there are no common interests, put the user back and continue searching.
+                    await this.redis.sadd(interestKey, potentialMatchId);
+                    continue;
+                }
+
+                // 3. Since a match is confirmed, clean up all traces of the matched user from the queueing system.
+                const cleanupPipeline = this.redis.pipeline();
+                matchedUserInterests.forEach(i => {
+                    cleanupPipeline.srem(this.getInterestKey(i), potentialMatchId);
+                });
+                // Also remove their interest list tracking key.
+                cleanupPipeline.del(matchedUserInterestsKey);
+                await cleanupPipeline.exec();
+
+                console.log(`[Service] Finalized match for '${userId}' with '${potentialMatchId}'. Common interests: [${commonInterests.join(', ')}]`);
+
+                // 4. Return the comprehensive match details.
+                return { matchedUserId: potentialMatchId, interests: commonInterests };
+
             } else if (potentialMatchId) {
-                // If we popped our own ID, add it back to the set.
+                // We popped our own ID by chance, put it back into the set.
                 await this.redis.sadd(interestKey, potentialMatchId);
             }
         }
@@ -71,42 +106,50 @@ export class MatchmakingService {
         // Add the user to all their specified interest queues to wait for a match.
         console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${interests.join(', ')}].`);
         const queueingPipeline = this.redis.pipeline();
+
         interests.forEach(interest => {
-            const interestKey = this.getInterestKey(interest);
-            queueingPipeline.sadd(interestKey, userId);
+            queueingPipeline.sadd(this.getInterestKey(interest), userId);
         });
+
+        if (interests.length > 0) {
+            const userInterestsKey = this.getUserInterestsKey(userId);
+            queueingPipeline.sadd(userInterestsKey, ...interests);
+        }
+
         await queueingPipeline.exec();
 
         return null; // Indicates that the user is now waiting.
     }
 
     /**
-     * Publishes a match notification to a specific user's channel, including the matched interest.
-     * @param currentUserId The user who initiated the match.
-     * @param matchedUserId The user who was waiting in the queue.
-     * @param interest The common interest they were matched on.
-     */
-    public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interest: string): Promise<void> {
-        console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}' on interest '${interest}'`);
-        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interest: interest });
+      * Publishes a match notification to a specific user's channel.
+      * @param currentUserId The user who initiated the match.
+      * @param matchedUserId The user who was waiting in the queue.
+      * @param interests The array of common interests they were matched on.
+      */
+    public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interests: string[]): Promise<void> {
+        console.log(`[Service] Notifying '${matchedUserId}' about match with '${currentUserId}' on interests [${interests.join(', ')}]`);
+        // The payload now contains an array of interests.
+        const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interests: interests });
         const channel = this.getNotificationChannel(matchedUserId);
         await this.redis.publish(channel, payload);
     }
 
     /**
-     * Removes a user from the waiting queues for all their specified interests.
-     * @param userId The user's ID.
-     * @param interests The array of interests the user was waiting in.
-     */
+   * Removes a user from all waiting queues for their specified interests.
+   * This is used when a user cancels their search.
+   * @param userId The user's ID.
+   * @param interests The array of interests the user was waiting in.
+   */
     public async removeUserFromQueue(userId: string, interests: string[]): Promise<void> {
         if (!interests || interests.length === 0) return;
 
         console.log(`[Service] Removing user '${userId}' from queues for interests: [${interests.join(', ')}].`);
         const pipeline = this.redis.pipeline();
         interests.forEach(interest => {
-            const interestKey = this.getInterestKey(interest);
-            pipeline.srem(interestKey, userId);
+            pipeline.srem(this.getInterestKey(interest), userId);
         });
+        pipeline.del(this.getUserInterestsKey(userId));
         await pipeline.exec();
     }
 

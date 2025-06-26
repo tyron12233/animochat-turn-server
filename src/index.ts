@@ -85,12 +85,12 @@ app.get('/matchmaking', async (req, res) => {
         const matchResult = await matchmakingService.findOrQueueUser(userId, interests);
 
         if (matchResult) {
-            const { matchedUserId, interest: matchedInterest } = matchResult;
-            // Notify the other user (who was waiting)
-            await matchmakingService.notifyUserOfMatch(userId, matchedUserId, matchedInterest);
+            const { matchedUserId, interests: matchedInterests } = matchResult;
 
-            // Notify the current user immediately
-            const payload = JSON.stringify({ state: 'MATCHED', matchedUserId, interest: matchedInterest });
+            await matchmakingService.notifyUserOfMatch(userId, matchedUserId, matchedInterests);
+
+            const interestString = matchedInterests.join(',');
+            const payload = JSON.stringify({ state: 'MATCHED', matchedUserId, interest: interestString });
             res.write(`data: ${payload}\n\n`);
 
             cleanup();
