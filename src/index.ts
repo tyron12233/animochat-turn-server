@@ -152,6 +152,39 @@ app.get('/matchmaking', async (req, res) => {
     }
 });
 
+
+/**
+ * (NEW) Endpoint to disconnect or end a chat session.
+ * A user can call this to terminate their current chat, which will
+ * remove the session for both participants.
+ * @param {string} userId - The ID of the user initiating the disconnect.
+ * @return {Response} - Returns a success or error message.
+ */
+app.post('/session/disconnect', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const { userId } = req.body;
+
+    if (!userId) {
+        return res.status(400).json({ message: 'User ID is required in the request body.' });
+    }
+
+    try {
+        const wasSessionEnded = await matchmakingService.endChatSession(userId);
+
+        if (wasSessionEnded) {
+            console.log(`[API] User '${userId}' successfully disconnected from their session.`);
+            res.status(200).json({ message: 'Session disconnected successfully.' });
+        } else {
+            console.log(`[API] User '${userId}' attempted to disconnect, but no active session was found.`);
+            res.status(404).json({ message: 'No active session found to disconnect.' });
+        }
+    } catch (error) {
+        console.error(`[API] An error occurred while disconnecting session for user '${userId}':`, error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+
 /**
  * Endpoint to get the list of interests for a user.
  * This endpoint retrieves the interests of a user from Redis.
@@ -200,7 +233,6 @@ app.get('/session/:userId', async (req, res) => {
             res.status(200).json(sessionDetails);
         } else {
             console.log(`[API] No active session found for user '${userId}'.`);
-            // (MODIFIED) Return 200 OK even if no session is found, as requested.
             res.status(200).json({ message: 'No active session found for this user.' });
         }
     } catch (error) {

@@ -248,6 +248,54 @@ export class MatchmakingService {
         }
     }
 
+    /**
+     * Ends a chat session based on a request from one of its participants.
+     * It finds the session via the user's ID, then removes the session data
+     * and the session mappings for all participants.
+     * @param userId The ID of the user initiating the disconnect.
+     * @returns A promise that resolves to true if a session was found and deleted, otherwise false.
+     */
+    public async endChatSession(userId: string): Promise<boolean> {
+        const userSessionKey = this.getUserSessionKey(userId);
+        const chatId = await this.redis.get(userSessionKey);
+
+        if (!chatId) {
+            console.log(`[Service] No active session to disconnect for user '${userId}'.`);
+            return false;
+        }
+
+        const chatSessionKey = this.getChatSessionKey(chatId);
+        const sessionDataJSON = await this.redis.get(chatSessionKey);
+
+        if (!sessionDataJSON) {
+            console.log(`[Service] Session data for chat '${chatId}' not found, but user '${userId}' was mapped to it. Cleaning up stale mapping.`);
+            await this.redis.del(userSessionKey);
+            return false;
+        }
+
+        try {
+            const sessionData = JSON.parse(sessionDataJSON);
+            const participants: string[] = sessionData.participants || [];
+
+            const pipeline = this.redis.pipeline();
+            // Delete the main chat session data
+            pipeline.del(chatSessionKey);
+            // Delete the user-to-session mapping for all participants
+            participants.forEach(participantId => {
+                pipeline.del(this.getUserSessionKey(participantId));
+            });
+            await pipeline.exec();
+
+            console.log(`[Service] User '${userId}' ended chat session '${chatId}'. Session and participant mappings removed.`);
+            return true;
+        } catch (error) {
+            console.error(`[Service] Error ending chat session '${chatId}':`, error);
+            // Still try to clean up the user's mapping
+            await this.redis.del(userSessionKey);
+            return false;
+        }
+    }
+
 
 
     /**
