@@ -72,6 +72,7 @@ app.get('/matchmaking', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
     if (MAINTENANCE_MODE) {
         res.status(503).write(`data: ${JSON.stringify({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' })}\n\n`);
@@ -161,6 +162,7 @@ app.get('/matchmaking', async (req, res) => {
  * @return {Response} - Returns a success or error message.
  */
 app.post('/session/disconnect', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     const { userId } = req.body;
 
     if (!userId) {
@@ -191,6 +193,7 @@ app.post('/session/disconnect', async (req, res) => {
  * @return {Response} - Returns a JSON response with the user's interests or an error message
  */
 app.get('/interests/popular', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     if (MAINTENANCE_MODE) {
         res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
         return;
@@ -215,6 +218,7 @@ app.get('/interests/popular', async (req, res) => {
  * @return {Response} - Returns session details (chatId, serverUrl, participants) or a message if not found.
  */
 app.get('/session/:userId', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     const { userId } = req.params;
 
     if (!userId) {
