@@ -182,7 +182,7 @@ app.get('/interests/popular', async (req, res) => {
  * This is the primary endpoint for clients to use on startup to determine if they should
  * reconnect to a previous chat or start a new matchmaking search.
  * @param {string} userId - The ID of the user to check.
- * @return {Response} - Returns session details (chatId, serverUrl, participants) or a 404 if not found.
+ * @return {Response} - Returns session details (chatId, serverUrl, participants) or a message if not found.
  */
 app.get('/session/:userId', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -190,10 +190,6 @@ app.get('/session/:userId', async (req, res) => {
 
     if (!userId) {
         return res.status(400).json({ message: 'User ID is required.' });
-    }
-
-    if (MAINTENANCE_MODE) {
-        return res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
     }
 
     try {
@@ -204,7 +200,8 @@ app.get('/session/:userId', async (req, res) => {
             res.status(200).json(sessionDetails);
         } else {
             console.log(`[API] No active session found for user '${userId}'.`);
-            res.status(404).json({ message: 'No active session found for this user.' });
+            // (MODIFIED) Return 200 OK even if no session is found, as requested.
+            res.status(200).json({ message: 'No active session found for this user.' });
         }
     } catch (error) {
         console.error(`[API] An error occurred while checking session for user '${userId}':`, error);
