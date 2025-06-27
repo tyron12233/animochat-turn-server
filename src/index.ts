@@ -28,7 +28,7 @@ const CHAT_SERVER_URLS = [
 let currentServerIndex = 0;
 
 /**
- * (NEW) Implements a simple round-robin strategy to select the next chat server.
+ * Implements a simple round-robin strategy to select the next chat server.
  * This function distributes the load evenly across the available servers.
  * @returns {string} The URL of the next chat server to use.
  */
@@ -41,7 +41,12 @@ const getNextChatServer = (): string => {
 
 const matchmakingService = new MatchmakingService(redis, getNextChatServer);
 
-// maintenance end point
+
+/**
+ * Endpoint to check the status of the matchmaking service.
+ * This endpoint returns the current state of the matchmaking service, whether it is under maintenance or operational
+ * @return {Response} - Returns a JSON response indicating the state of the service
+ */
 app.get('/maintenance', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
@@ -54,10 +59,13 @@ app.get('/maintenance', (req, res) => {
     }
 });
 
-// =================================================================================
-// --- Matchmaking API Endpoint ---
-// This route handler is now only responsible for managing the HTTP connection.
-// =================================================================================
+/**
+ * Endpoint for matchmaking.
+ * This endpoint handles matchmaking requests and uses Server-Sent Events (SSE) to notify users of matches.
+ * @param {string} userId - The ID of the user requesting matchmaking
+ * @param {string} interest - A comma-separated list of interests for matchmaking
+ * @return {Response} - Returns a stream of match notifications or an error message
+ */
 app.get('/matchmaking', async (req, res) => {
     // --- Setup Server-Sent Events (SSE) Headers ---
     res.setHeader('Content-Type', 'text/event-stream');
@@ -144,6 +152,12 @@ app.get('/matchmaking', async (req, res) => {
     }
 });
 
+/**
+ * Endpoint to get the list of interests for a user.
+ * This endpoint retrieves the interests of a user from Redis.
+ * @param {string} userId - The ID of the user whose interests are being requested
+ * @return {Response} - Returns a JSON response with the user's interests or an error message
+ */
 app.get('/interests/popular', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
 
@@ -159,6 +173,41 @@ app.get('/interests/popular', async (req, res) => {
         res.status(200).json(popularInterests);
     } catch (error) {
         console.error('[API] An error occurred while fetching popular interests:', error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+/**
+ * Endpoint to check if a user has an existing chat session.
+ * This is the primary endpoint for clients to use on startup to determine if they should
+ * reconnect to a previous chat or start a new matchmaking search.
+ * @param {string} userId - The ID of the user to check.
+ * @return {Response} - Returns session details (chatId, serverUrl, participants) or a 404 if not found.
+ */
+app.get('/session/:userId', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const { userId } = req.params;
+
+    if (!userId) {
+        return res.status(400).json({ message: 'User ID is required.' });
+    }
+
+    if (MAINTENANCE_MODE) {
+        return res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
+    }
+
+    try {
+        const sessionDetails = await matchmakingService.getSessionForUser(userId);
+
+        if (sessionDetails) {
+            console.log(`[API] Active session found for user '${userId}': ChatID ${sessionDetails.chatId}`);
+            res.status(200).json(sessionDetails);
+        } else {
+            console.log(`[API] No active session found for user '${userId}'.`);
+            res.status(404).json({ message: 'No active session found for this user.' });
+        }
+    } catch (error) {
+        console.error(`[API] An error occurred while checking session for user '${userId}':`, error);
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });

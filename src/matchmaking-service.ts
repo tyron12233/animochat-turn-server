@@ -30,6 +30,24 @@ export class MatchmakingService {
     }
 
     /**
+     * Creates a Redis key for storing chat session information.
+     * @param chatId The unique ID of the chat session.
+     * @returns The Redis key as a string.
+     */
+    private getChatSessionKey(chatId: string): string {
+        return `chat_session:${chatId}`;
+    }
+
+    /**
+     * Creates a Redis key to map a user's ID to their current chat session ID.
+     * @param userId The user's ID.
+     * @returns The Redis key as a string.
+     */
+    private getUserSessionKey(userId: string): string {
+        return `user_session:${userId}`;
+    }
+
+    /**
      * (NEW) Creates a Redis key to store a user's full list of interests while they are in the queue.
      * @param userId The user's ID.
      * @returns The Redis key as a string.
@@ -52,6 +70,29 @@ export class MatchmakingService {
        * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
        */
     public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interests: string[]; chatId: string; chatServerUrl: string; } | null> {
+        // End any previous chat session the user was in ---
+        const userSessionKey = this.getUserSessionKey(userId);
+        const oldChatId = await this.redis.get(userSessionKey);
+
+        if (oldChatId) {
+            const oldChatSessionKey = this.getChatSessionKey(oldChatId);
+            const oldSessionDataJSON = await this.redis.get(oldChatSessionKey);
+            if (oldSessionDataJSON) {
+                // We found the old session details.
+                const oldSessionData = JSON.parse(oldSessionDataJSON);
+                const participants: string[] = oldSessionData.participants || [];
+
+                // Clean up the old session and all user mappings to it.
+                const cleanupPipeline = this.redis.pipeline();
+                cleanupPipeline.del(oldChatSessionKey);
+                participants.forEach(participantId => {
+                    cleanupPipeline.del(this.getUserSessionKey(participantId));
+                });
+                await cleanupPipeline.exec();
+                console.log(`[Service] User '${userId}' started a new search, ending their previous chat session '${oldChatId}'.`);
+            }
+        }
+
         const pipeline = this.redis.pipeline();
         const now = Date.now();
 
@@ -93,6 +134,7 @@ export class MatchmakingService {
 
                 const chatServerUrl = this.getNextChatServer();
 
+                await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
 
                 // 3. Since a match is confirmed, clean up all traces of the matched user from the queueing system.
                 const cleanupPipeline = this.redis.pipeline();
@@ -102,6 +144,7 @@ export class MatchmakingService {
                 // Also remove their interest list tracking key.
                 cleanupPipeline.del(matchedUserInterestsKey);
                 await cleanupPipeline.exec();
+
                 console.log(`[Service] Finalized match for '${userId}' with '${potentialMatchId}'. ChatID: ${chatId}. Common interests: [${commonInterests.join(', ')}]`);
 
                 return { matchedUserId: potentialMatchId, interests: commonInterests, chatId, chatServerUrl };
@@ -144,11 +187,96 @@ export class MatchmakingService {
     }
 
     /**
-   * Removes a user from all waiting queues for their specified interests.
-   * This is used when a user cancels their search.
-   * @param userId The user's ID.
-   * @param interests The array of interests the user was waiting in.
-   */
+     * Stores the server URL and participant IDs for a chat session in Redis without an expiration.
+     * It also maps each participant's user ID to the chat ID for easy lookup.
+     * @param chatId The unique ID of the chat session.
+     * @param chatServerUrl The URL of the chat server hosting the session.
+     * @param participants An array containing the IDs of the two users in the chat.
+     */
+    public async storeChatSession(chatId: string, chatServerUrl: string, participants: string[]): Promise<void> {
+        const key = this.getChatSessionKey(chatId);
+        const sessionData = {
+            serverUrl: chatServerUrl,
+            participants: participants
+        };
+
+        const pipeline = this.redis.pipeline();
+
+        pipeline.set(key, JSON.stringify(sessionData));
+
+        // Map each participant to the chatId so we can find and end the session later.
+        participants.forEach(userId => {
+            pipeline.set(this.getUserSessionKey(userId), chatId);
+        });
+
+        await pipeline.exec();
+        console.log(`[Service] Stored persistent chat session '${chatId}' for participants [${participants.join(', ')}].`);
+    }
+
+    /**
+  * (NEW) Retrieves the active chat session details for a given user ID.
+  * @param userId The ID of the user.
+  * @returns A promise that resolves to an object containing the chatId, serverUrl, and participants, or null if no active session is found.
+  */
+    public async getSessionForUser(userId: string): Promise<{ chatId: string; serverUrl: string; participants: string[] } | null> {
+        const userSessionKey = this.getUserSessionKey(userId);
+        const chatId = await this.redis.get(userSessionKey);
+
+        if (!chatId) {
+            return null;
+
+        }
+        const chatSessionKey = this.getChatSessionKey(chatId);
+        const sessionDataJSON = await this.redis.get(chatSessionKey);
+
+        if (!sessionDataJSON) {
+            // Data is inconsistent, the user is mapped to a non-existent session. Clean it up.
+            await this.redis.del(userSessionKey);
+            return null;
+        }
+
+        try {
+            const sessionData = JSON.parse(sessionDataJSON);
+            return {
+                chatId,
+                serverUrl: sessionData.serverUrl,
+                participants: sessionData.participants
+            };
+        } catch (error) {
+            console.error(`[Service] Error parsing session data for chatId '${chatId}':`, error);
+            return null;
+        }
+    }
+
+
+
+    /**
+     * Retrieves the chat server URL for a given chat session ID from Redis.
+     * @param chatId The ID of the chat session.
+     * @returns A promise that resolves to the chat server URL string, or null if not found.
+     */
+    public async getChatServerForSession(chatId: string): Promise<string | null> {
+        const key = this.getChatSessionKey(chatId);
+        const sessionDataJSON = await this.redis.get(key);
+        if (sessionDataJSON) {
+            try {
+                const sessionData = JSON.parse(sessionDataJSON);
+                return sessionData.serverUrl || null;
+            } catch (error) {
+                console.error(`[Service] Error parsing session data for chatId '${chatId}':`, error);
+                return null;
+            }
+        }
+        return null;
+    }
+
+
+    /**
+     * Removes a user from all waiting queues for their specified interests.
+     * This is used when a user cancels their search.
+     * @param userId The user's ID.
+     * @param interests The array of interests the user was waiting in.
+     */
     public async removeUserFromQueue(userId: string, interests: string[]): Promise<void> {
         if (!interests || interests.length === 0) return;
 
