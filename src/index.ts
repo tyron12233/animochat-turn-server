@@ -2,6 +2,7 @@ import express, { type Response } from 'express';
 import { Redis } from 'ioredis';
 import { User } from './user';
 import { MatchmakingService } from './matchmaking-service';
+import cors from 'cors'
 
 
 const PORT = process.env.PORT || 3000;
@@ -11,6 +12,7 @@ const MAINTENANCE_MODE = false;
 
 const app = express();
 app.use(express.json());
+app.use(cors());
 
 const redis = new Redis(REDIS_URL);
 const subscriber = new Redis(REDIS_URL);
@@ -48,7 +50,6 @@ const matchmakingService = new MatchmakingService(redis, getNextChatServer);
  * @return {Response} - Returns a JSON response indicating the state of the service
  */
 app.get('/maintenance', (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Cache-Control', 'no-cache');
 
@@ -71,7 +72,6 @@ app.get('/matchmaking', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*'); // For CORS
 
     if (MAINTENANCE_MODE) {
         res.status(503).write(`data: ${JSON.stringify({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' })}\n\n`);
@@ -154,14 +154,13 @@ app.get('/matchmaking', async (req, res) => {
 
 
 /**
- * (NEW) Endpoint to disconnect or end a chat session.
+ * Endpoint to disconnect or end a chat session.
  * A user can call this to terminate their current chat, which will
  * remove the session for both participants.
  * @param {string} userId - The ID of the user initiating the disconnect.
  * @return {Response} - Returns a success or error message.
  */
 app.post('/session/disconnect', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
     const { userId } = req.body;
 
     if (!userId) {
@@ -192,8 +191,6 @@ app.post('/session/disconnect', async (req, res) => {
  * @return {Response} - Returns a JSON response with the user's interests or an error message
  */
 app.get('/interests/popular', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-
     if (MAINTENANCE_MODE) {
         res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
         return;
@@ -218,7 +215,6 @@ app.get('/interests/popular', async (req, res) => {
  * @return {Response} - Returns session details (chatId, serverUrl, participants) or a message if not found.
  */
 app.get('/session/:userId', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
     const { userId } = req.params;
 
     if (!userId) {
