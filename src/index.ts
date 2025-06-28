@@ -4,6 +4,7 @@ import { User } from './user';
 import { MatchmakingService } from './matchmaking-service';
 import cors from 'cors'
 
+import os from 'os';
 
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -127,6 +128,32 @@ app.get('/maintenance', (req, res) => {
  * @return {Response} - A JSON object with detailed server status.
  */
 app.get('/status', async (req, res) => {
+    /**
+ * Formats bytes into a human-readable string (KB, MB, GB).
+ * @param {number} bytes - The number of bytes.
+ * @returns {string} A formatted string.
+ */
+    const formatBytes = (bytes: number) => {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    /**
+     * Formats uptime in seconds into a human-readable string (d h m s).
+     * @param {number} seconds - The total seconds of uptime.
+     * @returns {string} A formatted string.
+     */
+    const formatUptime = (seconds: number) => {
+        const d = Math.floor(seconds / (3600 * 24));
+        const h = Math.floor(seconds % (3600 * 24) / 3600);
+        const m = Math.floor(seconds % 3600 / 60);
+        const s = Math.floor(seconds % 60);
+        return `${d}d ${h}h ${m}m ${s}s`;
+    };
+
     try {
         // 1. Get the number of unique users waiting in the queue.
         // Each user waiting in the queue has a 'user_interests:<userId>' key storing their interests.
@@ -146,6 +173,7 @@ app.get('/status', async (req, res) => {
 
         // 4. Determine the overall service state.
         const serviceState = MAINTENANCE_MODE ? 'MAINTENANCE' : 'ACTIVE';
+        const memoryUsage = process.memoryUsage();
 
         // 5. Construct the final status response object.
         const statusReport = {
@@ -159,7 +187,24 @@ app.get('/status', async (req, res) => {
             serviceInfo: {
                 serviceName: SERVICE_NAME,
                 version: SERVICE_VERSION
-            }
+            },
+
+            uptime: formatUptime(process.uptime()),
+            processMemory: {
+                rss: `${formatBytes(memoryUsage.rss)} (Resident Set Size)`,
+                heapTotal: `${formatBytes(memoryUsage.heapTotal)} (Total V8 Heap)`,
+                heapUsed: `${formatBytes(memoryUsage.heapUsed)} (Used V8 Heap)`,
+                external: `${formatBytes(memoryUsage.external)} (C++ Objects)`,
+            },
+            os: {
+                hostname: os.hostname(),
+                platform: os.platform(),
+                totalMemory: formatBytes(os.totalmem()),
+                freeMemory: formatBytes(os.freemem()),
+                cpuCount: os.cpus().length,
+                loadAverage: os.loadavg(),
+            },
+            cpuUsage: process.cpuUsage(),
         };
 
         res.status(200).json(statusReport);
