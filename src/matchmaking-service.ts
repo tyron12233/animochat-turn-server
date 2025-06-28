@@ -15,6 +15,7 @@ export class MatchmakingService {
 
     private getNextChatServer: () => Promise<string>;
 
+    private readonly WILDCARD_INTEREST = 'WILDCARD_ANY';
 
     constructor(redis: Redis, getNextChatServer: () => Promise<string>) {
         this.redis = redis;
@@ -64,15 +65,16 @@ export class MatchmakingService {
     private getNotificationChannel(userId: string): string {
         return `match_notification:${userId}`;
     }
+
     /**
-       * Attempts to find a match for a user based on an array of interests.
-       * If a match is found, the matched user's ID and the common interest are returned.
-       * If not, the current user is added to all relevant queues.
-       * This method also records each interest usage for popularity tracking.
-       * @param userId The ID of the user searching for a match.
-       * @param interests An array of interests to match on.
-       * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
-       */
+     * Attempts to find a match for a user based on an array of interests.
+     * - If interests are provided, it searches those queues and then the wildcard queue.
+     * - If no interests are provided (wildcard user), it searches ALL queues.
+     * This method also records each interest usage for popularity tracking.
+     * @param userId The ID of the user searching for a match.
+     * @param interests An array of interests to match on.
+     * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
+     */
     public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interests: string[]; chatId: string; chatServerUrl: string; } | null> {
         // End any previous chat session the user was in ---
         const userSessionKey = this.getUserSessionKey(userId);
@@ -97,97 +99,124 @@ export class MatchmakingService {
             }
         }
 
-        let effectiveInterests = interests;
-        if (!effectiveInterests || effectiveInterests.length === 0) {
-            console.log(`[Service] User '${userId}' provided no interests. Attempting to assign a random one.`);
-            // Try to get a random interest from the set of all known interests.
-            const randomInterest = await this.redis.srandmember(this.getAllInterestsKey());
-            if (randomInterest) {
-                effectiveInterests = [randomInterest];
-                console.log(`[Service] Assigned random interest '${randomInterest}' to user '${userId}'.`);
-            } else {
-                // Fallback if no interests exist in the system yet.
-                effectiveInterests = ['GLOBAL_CHAT'];
-                console.log(`[Service] No active interests found. Assigned fallback 'GLOBAL_CHAT' to user '${userId}'.`);
-            }
-        }
 
-        const pipeline = this.redis.pipeline();
-        const now = Date.now();
+        const isWildcard = !interests || interests.length === 0;
 
-        effectiveInterests.forEach(interest => {
-            pipeline.zadd(this.getPopularityKey(interest), now, userId);
-            pipeline.sadd(this.getAllInterestsKey(), interest);
-        });
+        if (isWildcard) {
+            console.log(`[Service] User '${userId}' is a wildcard search, checking all active queues.`);
 
-        await pipeline.exec();
+            const allInterests = await this.redis.smembers(this.getAllInterestsKey());
+            for (const interest of allInterests) {
+                // Wildcard users should not match other wildcard users directly, they should find someone with a concrete interest.
+                if (interest === this.WILDCARD_INTEREST) continue;
 
-        const shuffledInterests = interests.sort(() => Math.random() - 0.5);
+                const interestKey = this.getInterestKey(interest);
+                const potentialMatchId = await this.redis.spop(interestKey);
 
-        for (const interest of shuffledInterests) {
-            const interestKey = this.getInterestKey(interest);
-            // Atomically pop a potential match from one of the interest queues.
-            const potentialMatchId = await this.redis.spop(interestKey);
+                if (potentialMatchId && potentialMatchId !== userId) {
+                    console.log(`[Service] Wildcard user '${userId}' matched with '${potentialMatchId}' from queue '${interest}'.`);
+                    const matchedUserInterests = await this.redis.smembers(this.getUserInterestsKey(potentialMatchId));
 
-            if (potentialMatchId && potentialMatchId !== userId) {
-                // --- MATCH FOUND ---
-                console.log(`[Service] User '${userId}' got an initial match with '${potentialMatchId}' on interest '${interest}'`);
+                    const cleanupPipeline = this.redis.pipeline();
+                    matchedUserInterests.forEach(i => cleanupPipeline.srem(this.getInterestKey(i), potentialMatchId));
+                    cleanupPipeline.del(this.getUserInterestsKey(potentialMatchId));
+                    await cleanupPipeline.exec();
 
-                // 1. Get the matched user's full list of interests from Redis.
-                const matchedUserInterestsKey = this.getUserInterestsKey(potentialMatchId);
-                const matchedUserInterests = await this.redis.smembers(matchedUserInterestsKey);
+                    const ids = [userId, potentialMatchId].sort();
+                    const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
+                    const chatServerUrl = await this.getNextChatServer();
+                    await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
 
-                // 2. Find all common interests by calculating the intersection of the two lists.
-                const currentUserInterestsSet = new Set(interests);
-                const commonInterests = matchedUserInterests.filter(i => currentUserInterestsSet.has(i));
-
-                // This is a safety check. If the data is consistent, this should not be empty.
-                if (commonInterests.length === 0) {
-                    // If something went wrong and there are no common interests, put the user back and continue searching.
-                    await this.redis.sadd(interestKey, potentialMatchId);
-                    continue;
+                    return { matchedUserId: potentialMatchId, interests: [interest], chatId, chatServerUrl };
+                } else if (potentialMatchId) {
+                    await this.redis.sadd(interestKey, potentialMatchId); // Put self back
                 }
+            }
 
-                // Create a consistent, unique chatId by sorting the user IDs alphabetically and hashing them.
-                // This ensures that for any pair (A, B), the chatId is the same regardless of who initiated the match.
-                const ids = [userId, potentialMatchId].sort();
+            // No match found in any existing queue, so add user to the wildcard queue.
+            console.log(`[Service] No match for wildcard user '${userId}'. Adding to wildcard queue.`);
+            const wildcardQueueKey = this.getInterestKey(this.WILDCARD_INTEREST);
+            const userInterestsKey = this.getUserInterestsKey(userId);
+            const pipeline = this.redis.pipeline();
+            pipeline.sadd(wildcardQueueKey, userId);
+            pipeline.sadd(userInterestsKey, this.WILDCARD_INTEREST); // For cancellation
+            pipeline.sadd(this.getAllInterestsKey(), this.WILDCARD_INTEREST); // Ensure wildcard queue is discoverable
+            await pipeline.exec();
+
+            return null; // User is now waiting in the wildcard queue.
+        } else {
+            // --- STANDARD USER LOGIC ---
+            const pipeline = this.redis.pipeline();
+            const now = Date.now();
+            interests.forEach(interest => {
+                pipeline.zadd(this.getPopularityKey(interest), now, userId);
+                pipeline.sadd(this.getAllInterestsKey(), interest);
+            });
+            await pipeline.exec();
+
+            const shuffledInterests = interests.sort(() => Math.random() - 0.5);
+
+            // 1. Check own interest queues first
+            for (const interest of shuffledInterests) {
+                const interestKey = this.getInterestKey(interest);
+                const potentialMatchId = await this.redis.spop(interestKey);
+                if (potentialMatchId && potentialMatchId !== userId) {
+                    console.log(`[Service] User '${userId}' got a direct match with '${potentialMatchId}' on interest '${interest}'`);
+                    const matchedUserInterests = await this.redis.smembers(this.getUserInterestsKey(potentialMatchId));
+                    const currentUserInterestsSet = new Set(interests);
+                    const commonInterests = matchedUserInterests.filter(i => currentUserInterestsSet.has(i));
+
+                    if (commonInterests.length === 0) {
+                        await this.redis.sadd(interestKey, potentialMatchId);
+                        continue;
+                    }
+
+                    const cleanupPipeline = this.redis.pipeline();
+                    matchedUserInterests.forEach(i => cleanupPipeline.srem(this.getInterestKey(i), potentialMatchId));
+                    cleanupPipeline.del(this.getUserInterestsKey(potentialMatchId));
+                    await cleanupPipeline.exec();
+
+                    const ids = [userId, potentialMatchId].sort();
+                    const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
+                    const chatServerUrl = await this.getNextChatServer();
+                    await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
+
+                    return { matchedUserId: potentialMatchId, interests: commonInterests, chatId, chatServerUrl };
+                } else if (potentialMatchId) {
+                    await this.redis.sadd(interestKey, potentialMatchId); // Put self back
+                }
+            }
+
+            // 2. No direct match, check for a wildcard user
+            const wildcardKey = this.getInterestKey(this.WILDCARD_INTEREST);
+            const potentialWildcardId = await this.redis.spop(wildcardKey);
+            if (potentialWildcardId && potentialWildcardId !== userId) {
+                console.log(`[Service] User '${userId}' matched with wildcard user '${potentialWildcardId}'.`);
+                // Matched a wildcard user, cleanup is simple.
+                await this.redis.del(this.getUserInterestsKey(potentialWildcardId));
+
+                const ids = [userId, potentialWildcardId].sort();
                 const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
                 const chatServerUrl = await this.getNextChatServer();
-                await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
+                await this.storeChatSession(chatId, chatServerUrl, [userId, potentialWildcardId]);
 
-                // 3. Since a match is confirmed, clean up all traces of the matched user from the queueing system.
-                const cleanupPipeline = this.redis.pipeline();
-                matchedUserInterests.forEach(i => {
-                    cleanupPipeline.srem(this.getInterestKey(i), potentialMatchId);
-                });
-                // Also remove their interest list tracking key.
-                cleanupPipeline.del(matchedUserInterestsKey);
-                await cleanupPipeline.exec();
-
-                console.log(`[Service] Finalized match for '${userId}' with '${potentialMatchId}'. ChatID: ${chatId}. Common interests: [${commonInterests.join(', ')}]`);
-
-                return { matchedUserId: potentialMatchId, interests: commonInterests, chatId, chatServerUrl };
-
-            } else if (potentialMatchId) {
-                // We popped our own ID by chance, put it back into the set.
-                await this.redis.sadd(interestKey, potentialMatchId);
+                // The context of the chat will be the current user's interests.
+                return { matchedUserId: potentialWildcardId, interests: interests, chatId, chatServerUrl };
+            } else if (potentialWildcardId) {
+                await this.redis.sadd(wildcardKey, potentialWildcardId); // Put self back
             }
+
+            // 3. No match found, add to own interest queues
+            console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${interests.join(', ')}].`);
+            const queueingPipeline = this.redis.pipeline();
+            interests.forEach(interest => {
+                queueingPipeline.sadd(this.getInterestKey(interest), userId);
+            });
+            queueingPipeline.sadd(this.getUserInterestsKey(userId), ...interests);
+            await queueingPipeline.exec();
+
+            return null;
         }
-
-        // --- NO MATCH FOUND ---
-        console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${effectiveInterests.join(', ')}].`);
-        const queueingPipeline = this.redis.pipeline();
-        effectiveInterests.forEach(interest => {
-            queueingPipeline.sadd(this.getInterestKey(interest), userId);
-        });
-
-        if (effectiveInterests.length > 0) {
-            const userInterestsKey = this.getUserInterestsKey(userId);
-            queueingPipeline.sadd(userInterestsKey, ...effectiveInterests);
-        }
-        await queueingPipeline.exec();
-
-        return null;
     }
 
     /**
