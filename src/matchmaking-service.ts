@@ -198,8 +198,8 @@ export class MatchmakingService {
                 const chatServerUrl = await this.getNextChatServer();
                 await this.storeChatSession(chatId, chatServerUrl, [userId, potentialWildcardId]);
 
-                // The context of the chat will be the current user's interests.
-                return { matchedUserId: potentialWildcardId, interests: interests, chatId, chatServerUrl };
+                // Return the match. The interests array is empty as it was a generic match.
+                return { matchedUserId: potentialWildcardId, interests: [], chatId, chatServerUrl };
             } else if (potentialWildcardId) {
                 await this.redis.sadd(wildcardKey, potentialWildcardId); // Put self back
             }
