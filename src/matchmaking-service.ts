@@ -127,7 +127,7 @@ export class MatchmakingService {
                     const chatServerUrl = await this.getNextChatServer();
                     await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
 
-                    return { matchedUserId: potentialMatchId, interests: [interest], chatId, chatServerUrl };
+                    return { matchedUserId: potentialMatchId, interests: [], chatId, chatServerUrl };
                 } else if (potentialMatchId) {
                     await this.redis.sadd(interestKey, potentialMatchId); // Put self back
                 }
