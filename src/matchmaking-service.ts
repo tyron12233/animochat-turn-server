@@ -13,10 +13,10 @@ export class MatchmakingService {
 
     private popularityWindowMs = 10 * 60 * 1000;
 
-    private getNextChatServer: () => string;
+    private getNextChatServer: () => Promise<string>;
 
 
-    constructor(redis: Redis, getNextChatServer: () => string) {
+    constructor(redis: Redis, getNextChatServer: () => Promise<string>) {
         this.redis = redis;
         this.getNextChatServer = getNextChatServer;
     }
@@ -132,7 +132,7 @@ export class MatchmakingService {
                 const ids = [userId, potentialMatchId].sort();
                 const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
 
-                const chatServerUrl = this.getNextChatServer();
+                const chatServerUrl = await this.getNextChatServer();
 
                 await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
 

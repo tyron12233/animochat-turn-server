@@ -5,65 +5,15 @@ import { MatchmakingService } from './matchmaking-service';
 import cors from 'cors'
 
 import os from 'os';
+import { startServiceRegistration, SERVICE_NAME, SERVICE_VERSION, addStatusEndpoint, DISCOVERY_SERVER_URL } from './service';
+import { getChatServices } from './chat-service-discovery';
 
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const MAINTENANCE_MODE = false;
 
-
-const DISCOVERY_SERVER_URL = process.env.DISCOVERY_SERVER_URL || 'https://animochat-service-discovery.onrender.com/';
-const SERVICE_NAME = 'matchmaking-server';
-const SERVICE_VERSION = '1.0.0';
-
-// =================================================================================
-// --- Service Discovery Registration ---
-// =================================================================================
-
-/**
- * Registers the service with the discovery server or sends a heartbeat if already registered.
- * This function is called periodically to keep the service's registration alive.
- */
-const registerService = async () => {
-    try {
-        const response = await fetch(`${DISCOVERY_SERVER_URL}/register`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                serviceName: SERVICE_NAME,
-                version: SERVICE_VERSION,
-                url: process.env.RENDER_EXTERNAL_URL!
-            }),
-        });
-
-        if (!response.ok) {
-            throw new Error(`Failed to register service. Status: ${response.status}`);
-        }
-        console.log('Service registered/heartbeat sent successfully to discovery server.');
-    } catch (error) {
-        console.error('Failed to register service:', (error as Error).message);
-    }
-};
-
-/**
- * Unregisters the service from the discovery server during a graceful shutdown.
- */
-const unregisterService = async () => {
-    try {
-        await fetch(`${DISCOVERY_SERVER_URL}/unregister`, {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                serviceName: SERVICE_NAME,
-                version: SERVICE_VERSION,
-            }),
-        });
-        console.log('Service unregistered successfully from discovery server.');
-    } catch (error) {
-        console.error('Failed to unregister service:', (error as Error).message);
-    }
-};
+const CHAT_SERVERS_REFRESH_INTERVAL = 60 * 1000;
+let lastChatServersUpdate = 0;
 
 const app = express();
 app.use(express.json());
@@ -78,26 +28,46 @@ redis.on('error', (err) => console.error('Redis command client error', err));
 subscriber.on('error', (err) => console.error('Redis subscriber client error', err));
 
 // =================================================================================
-const CHAT_SERVER_URLS = [
-    "https://animochat-chat-server.onrender.com",
-    "https://animochat-chat-server-1.onrender.com"
-];
+let CHAT_SERVER_URLS: string[] = [];
 let currentServerIndex = 0;
+
+
 
 /**
  * Implements a simple round-robin strategy to select the next chat server.
  * This function distributes the load evenly across the available servers.
  * @returns {string} The URL of the next chat server to use.
  */
-const getNextChatServer = (): string => {
+const getNextChatServer = async (): Promise<string> => {
+    const now = Date.now();
+
+    if (CHAT_SERVER_URLS.length === 0 || (now - lastChatServersUpdate) > CHAT_SERVERS_REFRESH_INTERVAL) {
+        console.log(`[${new Date().toISOString()}] Refreshing chat server URLs from discovery service...`);
+
+        const chatServers = await getChatServices();
+        // throw an error if no chat servers are available
+        if (!chatServers || chatServers.length === 0) {
+            throw new Error('No chat servers available. Please check the service discovery configuration.');
+        }
+
+        CHAT_SERVER_URLS = chatServers;
+        lastChatServersUpdate = now;
+    }
+
+    if (CHAT_SERVER_URLS.length === 0) {
+        throw new Error('No chat servers available to connect to.');
+    }
+
+    // Round-robin logic to select the next server
     const serverUrl = CHAT_SERVER_URLS[currentServerIndex];
-    // Move to the next server in the list for the subsequent call.
-    currentServerIndex = (currentServerIndex + 1) % CHAT_SERVER_URLS.length;
-    return serverUrl!;
+    currentServerIndex = (currentServerIndex + 1) % CHAT_SERVER_URLS.length
+    return Promise.resolve(serverUrl!);
 };
 
 const matchmakingService = new MatchmakingService(redis, getNextChatServer);
 
+
+addStatusEndpoint(redis, subscriber, MAINTENANCE_MODE, app);
 
 /**
  * Endpoint to check the status of the matchmaking service.
@@ -112,106 +82,6 @@ app.get('/maintenance', (req, res) => {
         res.status(503).json({ state: 'MAINTENANCE', message: 'The matchmaking service is currently under maintenance. Please try again later.' });
     } else {
         res.status(200).json({ state: 'ACTIVE', message: 'The matchmaking service is operational.' });
-    }
-});
-
-/**
- * Endpoint for comprehensive server status.
- * This endpoint returns a detailed status report including service state,
- * Redis connectivity, and key metrics like queue length and active sessions.
- * @return {Response} - A JSON object with detailed server status.
- */
-/**
- * Endpoint for comprehensive server status.
- * This endpoint returns a detailed status report including service state,
- * Redis connectivity, and key metrics like queue length and active sessions.
- * @return {Response} - A JSON object with detailed server status.
- */
-app.get('/status', async (req, res) => {
-    /**
- * Formats bytes into a human-readable string (KB, MB, GB).
- * @param {number} bytes - The number of bytes.
- * @returns {string} A formatted string.
- */
-    const formatBytes = (bytes: number) => {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    };
-
-    /**
-     * Formats uptime in seconds into a human-readable string (d h m s).
-     * @param {number} seconds - The total seconds of uptime.
-     * @returns {string} A formatted string.
-     */
-    const formatUptime = (seconds: number) => {
-        const d = Math.floor(seconds / (3600 * 24));
-        const h = Math.floor(seconds % (3600 * 24) / 3600);
-        const m = Math.floor(seconds % 3600 / 60);
-        const s = Math.floor(seconds % 60);
-        return `${d}d ${h}h ${m}m ${s}s`;
-    };
-
-    try {
-        // 1. Get the number of unique users waiting in the queue.
-        // Each user waiting in the queue has a 'user_interests:<userId>' key storing their interests.
-        const waitingUserKeys = await redis.keys('user_interests:*');
-        const totalUsersInQueue = waitingUserKeys.length;
-
-        // 2. Get the number of active chat sessions.
-        // Each active session has a 'chat_session:<chatId>' key.
-        const sessionKeys = await redis.keys('chat_session:*');
-        const activeSessions = sessionKeys.length;
-
-        // 3. Get the connection status of both Redis clients.
-        const redisStatus = {
-            commands: redis.status,
-            subscriber: subscriber.status,
-        };
-
-        // 4. Determine the overall service state.
-        const serviceState = MAINTENANCE_MODE ? 'MAINTENANCE' : 'ACTIVE';
-        const memoryUsage = process.memoryUsage();
-
-        // 5. Construct the final status response object.
-        const statusReport = {
-            serviceState,
-            timestamp: new Date().toISOString(),
-            redis: redisStatus,
-            metrics: {
-                activeSessions,
-                usersInQueue: totalUsersInQueue,
-            },
-            serviceInfo: {
-                serviceName: SERVICE_NAME,
-                version: SERVICE_VERSION
-            },
-
-            uptime: formatUptime(process.uptime()),
-            processMemory: {
-                rss: `${formatBytes(memoryUsage.rss)} (Resident Set Size)`,
-                heapTotal: `${formatBytes(memoryUsage.heapTotal)} (Total V8 Heap)`,
-                heapUsed: `${formatBytes(memoryUsage.heapUsed)} (Used V8 Heap)`,
-                external: `${formatBytes(memoryUsage.external)} (C++ Objects)`,
-            },
-            os: {
-                hostname: os.hostname(),
-                platform: os.platform(),
-                totalMemory: formatBytes(os.totalmem()),
-                freeMemory: formatBytes(os.freemem()),
-                cpuCount: os.cpus().length,
-                loadAverage: os.loadavg(),
-            },
-            cpuUsage: process.cpuUsage(),
-        };
-
-        res.status(200).json(statusReport);
-
-    } catch (error) {
-        console.error('[API] An error occurred while fetching server status:', error);
-        res.status(500).json({ message: 'Internal Server Error while fetching status.' });
     }
 });
 
@@ -419,14 +289,5 @@ app.get('/session/:userId', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Matchmaking server is running on http://localhost:${PORT}`);
 
-    registerService();
-
-    // Then, send a heartbeat every 10 seconds to keep the registration alive
-    setInterval(registerService, 10000);
-});
-
-process.on('SIGINT', async () => {
-    await unregisterService();
-    // Give a moment for the unregister call to complete before exiting
-    setTimeout(() => process.exit(0), 500);
+    startServiceRegistration();
 });
