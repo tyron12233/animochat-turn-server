@@ -115,6 +115,59 @@ app.get('/maintenance', (req, res) => {
 });
 
 /**
+ * Endpoint for comprehensive server status.
+ * This endpoint returns a detailed status report including service state,
+ * Redis connectivity, and key metrics like queue length and active sessions.
+ * @return {Response} - A JSON object with detailed server status.
+ */
+app.get('/status', async (req, res) => {
+    try {
+        // 1. Get all queue keys and calculate the total number of users waiting.
+        const queueKeys = await redis.keys('queue:*');
+        let totalUsersInQueue = 0;
+        if (queueKeys.length > 0) {
+            // Get the size of each queue (set) and sum them up.
+            const queueLengths = await Promise.all(queueKeys.map(key => redis.scard(key)));
+            totalUsersInQueue = queueLengths.reduce((sum, length) => sum + length, 0);
+        }
+
+        // 2. Get the number of active chat sessions.
+        const sessionKeys = await redis.keys('session:*');
+        const activeSessions = sessionKeys.length;
+
+        // 3. Get the connection status of both Redis clients.
+        const redisStatus = {
+            commands: redis.status,
+            subscriber: subscriber.status,
+        };
+
+        // 4. Determine the overall service state.
+        const serviceState = MAINTENANCE_MODE ? 'MAINTENANCE' : 'ACTIVE';
+
+        // 5. Construct the final status response object.
+        const statusReport = {
+            serviceState,
+            timestamp: new Date().toISOString(),
+            redis: redisStatus,
+            metrics: {
+                activeSessions,
+                usersInQueue: totalUsersInQueue,
+            },
+            serviceInfo: {
+                serviceName: SERVICE_NAME,
+                version: SERVICE_VERSION
+            }
+        };
+
+        res.status(200).json(statusReport);
+
+    } catch (error) {
+        console.error('[API] An error occurred while fetching server status:', error);
+        res.status(500).json({ message: 'Internal Server Error while fetching status.' });
+    }
+});
+
+/**
  * Endpoint for matchmaking.
  * This endpoint handles matchmaking requests and uses Server-Sent Events (SSE) to notify users of matches.
  * @param {string} userId - The ID of the user requesting matchmaking
