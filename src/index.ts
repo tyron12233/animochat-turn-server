@@ -7,8 +7,63 @@ import cors from 'cors'
 
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-
 const MAINTENANCE_MODE = false;
+
+
+const DISCOVERY_SERVER_URL = process.env.DISCOVERY_SERVER_URL || 'https://animochat-service-discovery.onrender.com/';
+const SERVICE_NAME = 'matchmaking-server';
+const SERVICE_VERSION = '1.0.0';
+
+// =================================================================================
+// --- Service Discovery Registration ---
+// =================================================================================
+
+/**
+ * Registers the service with the discovery server or sends a heartbeat if already registered.
+ * This function is called periodically to keep the service's registration alive.
+ */
+const registerService = async () => {
+    try {
+        const response = await fetch(`${DISCOVERY_SERVER_URL}/register`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                serviceName: SERVICE_NAME,
+                version: SERVICE_VERSION,
+                // The PORT variable should be the one your app is listening on
+                port: Number(PORT),
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to register service. Status: ${response.status}`);
+        }
+        console.log('Service registered/heartbeat sent successfully to discovery server.');
+    } catch (error) {
+        console.error('Failed to register service:', (error as Error).message);
+    }
+};
+
+/**
+ * Unregisters the service from the discovery server during a graceful shutdown.
+ */
+const unregisterService = async () => {
+    try {
+        await fetch(`${DISCOVERY_SERVER_URL}/unregister`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                serviceName: SERVICE_NAME,
+                version: SERVICE_VERSION,
+            }),
+        });
+        console.log('Service unregistered successfully from discovery server.');
+    } catch (error) {
+        console.error('Failed to unregister service:', (error as Error).message);
+    }
+};
 
 const app = express();
 app.use(express.json());
@@ -240,4 +295,15 @@ app.get('/session/:userId', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`Matchmaking server is running on http://localhost:${PORT}`);
+
+    registerService();
+
+    // Then, send a heartbeat every 10 seconds to keep the registration alive
+    setInterval(registerService, 10000);
+});
+
+process.on('SIGINT', async () => {
+    await unregisterService();
+    // Give a moment for the unregister call to complete before exiting
+    setTimeout(() => process.exit(0), 500);
 });
