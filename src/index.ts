@@ -216,6 +216,28 @@ app.get('/status', async (req, res) => {
 });
 
 
+app.post('/cancel_matchmaking', async (req, res) => {
+    const { userId, interests } = req.body;
+
+    if (!userId) {
+        return res.status(400).json({ message: 'User ID is required in the request body.' });
+    }
+
+    if (!interests || !Array.isArray(interests)) {
+        return res.status(400).json({ message: 'Interests must be provided as an array in the request body.' });
+    }
+
+    try {
+        console.log(`[API] User '${userId}' is attempting to cancel matchmaking for interests: ${interests.join(', ')}`);
+        await matchmakingService.removeUserFromQueue(userId, interests);
+        console.log(`[API] User '${userId}' successfully removed from matchmaking queue.`);
+        res.status(200).json({ message: 'Matchmaking cancelled successfully.' });
+    } catch (error) {
+        console.error(`[API] An error occurred while cancelling matchmaking for user '${userId}':`, error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
 /**
  * Endpoint for matchmaking.
  * This endpoint handles matchmaking requests and uses Server-Sent Events (SSE) to notify users of matches.
