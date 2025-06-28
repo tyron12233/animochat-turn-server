@@ -120,19 +120,22 @@ app.get('/maintenance', (req, res) => {
  * Redis connectivity, and key metrics like queue length and active sessions.
  * @return {Response} - A JSON object with detailed server status.
  */
+/**
+ * Endpoint for comprehensive server status.
+ * This endpoint returns a detailed status report including service state,
+ * Redis connectivity, and key metrics like queue length and active sessions.
+ * @return {Response} - A JSON object with detailed server status.
+ */
 app.get('/status', async (req, res) => {
     try {
-        // 1. Get all queue keys and calculate the total number of users waiting.
-        const queueKeys = await redis.keys('queue:*');
-        let totalUsersInQueue = 0;
-        if (queueKeys.length > 0) {
-            // Get the size of each queue (set) and sum them up.
-            const queueLengths = await Promise.all(queueKeys.map(key => redis.scard(key)));
-            totalUsersInQueue = queueLengths.reduce((sum, length) => sum + length, 0);
-        }
+        // 1. Get the number of unique users waiting in the queue.
+        // Each user waiting in the queue has a 'user_interests:<userId>' key storing their interests.
+        const waitingUserKeys = await redis.keys('user_interests:*');
+        const totalUsersInQueue = waitingUserKeys.length;
 
         // 2. Get the number of active chat sessions.
-        const sessionKeys = await redis.keys('session:*');
+        // Each active session has a 'chat_session:<chatId>' key.
+        const sessionKeys = await redis.keys('chat_session:*');
         const activeSessions = sessionKeys.length;
 
         // 3. Get the connection status of both Redis clients.
@@ -166,6 +169,7 @@ app.get('/status', async (req, res) => {
         res.status(500).json({ message: 'Internal Server Error while fetching status.' });
     }
 });
+
 
 /**
  * Endpoint for matchmaking.
