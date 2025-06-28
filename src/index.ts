@@ -32,8 +32,7 @@ const registerService = async () => {
             body: JSON.stringify({
                 serviceName: SERVICE_NAME,
                 version: SERVICE_VERSION,
-                // The PORT variable should be the one your app is listening on
-                port: Number(PORT),
+                url: process.env.RENDER_EXTERNAL_URL!
             }),
         });
 
