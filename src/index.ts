@@ -87,19 +87,16 @@ app.get('/maintenance', (req, res) => {
 
 
 app.post('/cancel_matchmaking', async (req, res) => {
-    const { userId, interests } = req.body;
+    const { userId } = req.body;
 
     if (!userId) {
         return res.status(400).json({ message: 'User ID is required in the request body.' });
     }
 
-    if (!interests || !Array.isArray(interests)) {
-        return res.status(400).json({ message: 'Interests must be provided as an array in the request body.' });
-    }
 
     try {
-        console.log(`[API] User '${userId}' is attempting to cancel matchmaking for interests: ${interests.join(', ')}`);
-        await matchmakingService.removeUserFromQueue(userId, interests);
+        console.log(`[API] Request to cancel matchmaking for user '${userId}' received.`);
+        await matchmakingService.removeUserFromQueue(userId);
         console.log(`[API] User '${userId}' successfully removed from matchmaking queue.`);
         res.status(200).json({ message: 'Matchmaking cancelled successfully.' });
     } catch (error) {
@@ -130,14 +127,14 @@ app.get('/matchmaking', async (req, res) => {
     // --- Validate Input ---
     let { userId, interest } = req.query;
     if (!userId || typeof userId !== 'string') {
-        res.status(400).write(`data: ${JSON.stringify({ state: 'ERROR', message: 'userId and interest string query parameters are required' })}\n\n`);
+        res.status(400).write(`data: ${JSON.stringify({ state: 'ERROR', message: 'A userId query parameter is required.' })}\n\n`);
         res.end();
         return;
     }
 
     const interests = (typeof interest === 'string' && interest.length > 0)
         ? interest.split(',').map(i => i.trim().toUpperCase())
-        : ['GLOBAL_CHAT'];
+        : [];
 
     const notificationChannel = `match_notification:${userId}`;
 
@@ -147,7 +144,7 @@ app.get('/matchmaking', async (req, res) => {
         if (channel === notificationChannel) {
             console.log(`[${userId}] Received match notification via Pub/Sub:`, message);
             res.write(`data: ${message}\n\n`);
-            cleanup(); // Clean up resources and close connection
+            cleanup();
             res.end();
         }
     };
@@ -165,7 +162,7 @@ app.get('/matchmaking', async (req, res) => {
 
     const cleanup = () => {
         console.log(`[${userId}] Cleaning up SSE resources.`);
-        matchmakingService.removeUserFromQueue(userId, interests);
+        matchmakingService.removeUserFromQueue(userId);
         subscriber.unsubscribe(notificationChannel);
         subscriber.removeListener('message', messageHandler);
     };

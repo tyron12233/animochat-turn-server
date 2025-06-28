@@ -29,6 +29,10 @@ export class MatchmakingService {
         return `popular:${interest.toUpperCase()}`;
     }
 
+    private getAllInterestsKey(): string {
+        return 'all_interests';
+    }
+
     /**
      * Creates a Redis key for storing chat session information.
      * @param chatId The unique ID of the chat session.
@@ -93,12 +97,29 @@ export class MatchmakingService {
             }
         }
 
+        let effectiveInterests = interests;
+        if (!effectiveInterests || effectiveInterests.length === 0) {
+            console.log(`[Service] User '${userId}' provided no interests. Attempting to assign a random one.`);
+            // Try to get a random interest from the set of all known interests.
+            const randomInterest = await this.redis.srandmember(this.getAllInterestsKey());
+            if (randomInterest) {
+                effectiveInterests = [randomInterest];
+                console.log(`[Service] Assigned random interest '${randomInterest}' to user '${userId}'.`);
+            } else {
+                // Fallback if no interests exist in the system yet.
+                effectiveInterests = ['GLOBAL_CHAT'];
+                console.log(`[Service] No active interests found. Assigned fallback 'GLOBAL_CHAT' to user '${userId}'.`);
+            }
+        }
+
         const pipeline = this.redis.pipeline();
         const now = Date.now();
 
-        interests.forEach(interest => {
+        effectiveInterests.forEach(interest => {
             pipeline.zadd(this.getPopularityKey(interest), now, userId);
+            pipeline.sadd(this.getAllInterestsKey(), interest);
         });
+
         await pipeline.exec();
 
         const shuffledInterests = interests.sort(() => Math.random() - 0.5);
@@ -131,9 +152,7 @@ export class MatchmakingService {
                 // This ensures that for any pair (A, B), the chatId is the same regardless of who initiated the match.
                 const ids = [userId, potentialMatchId].sort();
                 const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
-
                 const chatServerUrl = await this.getNextChatServer();
-
                 await this.storeChatSession(chatId, chatServerUrl, [userId, potentialMatchId]);
 
                 // 3. Since a match is confirmed, clean up all traces of the matched user from the queueing system.
@@ -156,22 +175,19 @@ export class MatchmakingService {
         }
 
         // --- NO MATCH FOUND ---
-        // Add the user to all their specified interest queues to wait for a match.
-        console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${interests.join(', ')}].`);
+        console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${effectiveInterests.join(', ')}].`);
         const queueingPipeline = this.redis.pipeline();
-
-        interests.forEach(interest => {
+        effectiveInterests.forEach(interest => {
             queueingPipeline.sadd(this.getInterestKey(interest), userId);
         });
 
-        if (interests.length > 0) {
+        if (effectiveInterests.length > 0) {
             const userInterestsKey = this.getUserInterestsKey(userId);
-            queueingPipeline.sadd(userInterestsKey, ...interests);
+            queueingPipeline.sadd(userInterestsKey, ...effectiveInterests);
         }
-
         await queueingPipeline.exec();
 
-        return null; // Indicates that the user is now waiting.
+        return null;
     }
 
     /**
@@ -320,20 +336,28 @@ export class MatchmakingService {
 
 
     /**
-     * Removes a user from all waiting queues for their specified interests.
-     * This is used when a user cancels their search.
-     * @param userId The user's ID.
-     * @param interests The array of interests the user was waiting in.
-     */
-    public async removeUserFromQueue(userId: string, interests: string[]): Promise<void> {
-        if (!interests || interests.length === 0) return;
+    * Removes a user from all waiting queues they are in.
+    * This is used when a user cancels their search or their connection drops.
+    * It looks up the user's interests from Redis instead of requiring them as a parameter.
+    * @param userId The user's ID.
+    */
+    public async removeUserFromQueue(userId: string): Promise<void> {
+        const userInterestsKey = this.getUserInterestsKey(userId);
+        const interests = await this.redis.smembers(userInterestsKey);
 
-        console.log(`[Service] Removing user '${userId}' from queues for interests: [${interests.join(', ')}].`);
+        if (!interests || interests.length === 0) {
+            // This can happen if the user was already matched and cleaned up, which is not an error.
+            console.log(`[Service] No queued interests found for user '${userId}'. No action needed for queue removal.`);
+            return;
+        }
+
+        console.log(`[Service] Removing user '${userId}' from queues for discovered interests: [${interests.join(', ')}].`);
         const pipeline = this.redis.pipeline();
         interests.forEach(interest => {
             pipeline.srem(this.getInterestKey(interest), userId);
         });
-        pipeline.del(this.getUserInterestsKey(userId));
+        // Also remove their interest list tracking key.
+        pipeline.del(userInterestsKey);
         await pipeline.exec();
     }
 
