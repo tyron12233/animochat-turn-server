@@ -76,38 +76,38 @@ export class MatchmakingService {
      * @returns A promise that resolves to an object with the matched user's ID and the matched interest, or null.
      */
     public async findOrQueueUser(userId: string, interests: string[]): Promise<{ matchedUserId: string; interests: string[]; chatId: string; chatServerUrl: string; } | null> {
-        // End any previous chat session the user was in ---
-        const userSessionKey = this.getUserSessionKey(userId);
-        const oldChatId = await this.redis.get(userSessionKey);
-
-        if (oldChatId) {
-            const oldChatSessionKey = this.getChatSessionKey(oldChatId);
-            const oldSessionDataJSON = await this.redis.get(oldChatSessionKey);
-            if (oldSessionDataJSON) {
-                // We found the old session details.
-                const oldSessionData = JSON.parse(oldSessionDataJSON);
-                const participants: string[] = oldSessionData.participants || [];
-
-                // Clean up the old session and all user mappings to it.
-                const cleanupPipeline = this.redis.pipeline();
-                cleanupPipeline.del(oldChatSessionKey);
-                participants.forEach(participantId => {
-                    cleanupPipeline.del(this.getUserSessionKey(participantId));
-                });
-                await cleanupPipeline.exec();
-                console.log(`[Service] User '${userId}' started a new search, ending their previous chat session '${oldChatId}'.`);
-            }
-        }
-
+        await this.endChatSession(userId);
 
         const isWildcard = !interests || interests.length === 0;
 
         if (isWildcard) {
             console.log(`[Service] User '${userId}' is a wildcard search, checking all active queues.`);
 
+            const wildcardKey = this.getInterestKey(this.WILDCARD_INTEREST);
+            const potentialWildcardId = await this.redis.spop(wildcardKey);
+
+            if (potentialWildcardId && potentialWildcardId !== userId) {
+                console.log(`[Service] Wildcard user '${userId}' matched with another wildcard user '${potentialWildcardId}'.`);
+
+                // Cleanup for the matched wildcard user is simple.
+                await this.redis.del(this.getUserInterestsKey(potentialWildcardId));
+
+                const ids = [userId, potentialWildcardId].sort();
+                const chatId = createHash('sha1').update(ids.join('-')).digest('hex');
+                const chatServerUrl = await this.getNextChatServer();
+                await this.storeChatSession(chatId, chatServerUrl, [userId, potentialWildcardId]);
+
+                // Return the match. The interests array is empty as it was a generic match.
+                return { matchedUserId: potentialWildcardId, interests: [], chatId, chatServerUrl };
+            } else if (potentialWildcardId) {
+                await this.redis.sadd(wildcardKey, potentialWildcardId); // We popped ourself, put it back.
+            }
+
+            // 2. No wildcard-wildcard match found, so check all other active queues.
+            console.log(`[Service] No wildcard-wildcard match for '${userId}', checking other active interest queues.`);
             const allInterests = await this.redis.smembers(this.getAllInterestsKey());
             for (const interest of allInterests) {
-                // Wildcard users should not match other wildcard users directly, they should find someone with a concrete interest.
+                // We already checked the wildcard queue, so skip it in this loop.
                 if (interest === this.WILDCARD_INTEREST) continue;
 
                 const interestKey = this.getInterestKey(interest);
@@ -133,12 +133,11 @@ export class MatchmakingService {
                 }
             }
 
-            // No match found in any existing queue, so add user to the wildcard queue.
+            // 3. No match found in any queue, so add user to the wildcard queue.
             console.log(`[Service] No match for wildcard user '${userId}'. Adding to wildcard queue.`);
-            const wildcardQueueKey = this.getInterestKey(this.WILDCARD_INTEREST);
             const userInterestsKey = this.getUserInterestsKey(userId);
             const pipeline = this.redis.pipeline();
-            pipeline.sadd(wildcardQueueKey, userId);
+            pipeline.sadd(wildcardKey, userId);
             pipeline.sadd(userInterestsKey, this.WILDCARD_INTEREST); // For cancellation
             pipeline.sadd(this.getAllInterestsKey(), this.WILDCARD_INTEREST); // Ensure wildcard queue is discoverable
             await pipeline.exec();
