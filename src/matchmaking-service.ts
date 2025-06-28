@@ -144,7 +144,6 @@ export class MatchmakingService {
 
             return null; // User is now waiting in the wildcard queue.
         } else {
-            // --- STANDARD USER LOGIC ---
             const pipeline = this.redis.pipeline();
             const now = Date.now();
             interests.forEach(interest => {
@@ -455,5 +454,39 @@ export class MatchmakingService {
         return interestsWithCounts
             .sort((a, b) => b.count - a.count)
             .slice(0, topN);
+    }
+
+
+    public async resetAllData(): Promise<void> {
+        console.log(`[Service] Resetting all matchmaking data...`);
+        const pipeline = this.redis.pipeline();
+
+        // Remove all interest keys
+        const allInterests = await this.redis.smembers(this.getAllInterestsKey());
+        allInterests.forEach(interest => {
+            pipeline.del(this.getInterestKey(interest));
+            pipeline.del(this.getPopularityKey(interest));
+        });
+
+        // Remove the wildcard interest key
+        pipeline.del(this.getInterestKey(this.WILDCARD_INTEREST));
+
+        // Remove all chat sessions and user session mappings
+        const chatSessionKeys = await this.redis.keys('chat_session:*');
+        chatSessionKeys.forEach(key => {
+            pipeline.del(key);
+        });
+
+        const userSessionKeys = await this.redis.keys('user_session:*');
+        userSessionKeys.forEach(key => {
+            pipeline.del(key);
+        });
+
+        // Clear the all_interests set
+        pipeline.del(this.getAllInterestsKey());
+
+        // Execute the pipeline
+        await pipeline.exec();
+        console.log(`[Service] All matchmaking data has been reset.`);
     }
 }

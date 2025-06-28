@@ -125,16 +125,17 @@ app.get('/matchmaking', async (req, res) => {
     }
 
     // --- Validate Input ---
-    let { userId, interest } = req.query;
+    let { userId, interests } = req.query;
     if (!userId || typeof userId !== 'string') {
         res.status(400).write(`data: ${JSON.stringify({ state: 'ERROR', message: 'A userId query parameter is required.' })}\n\n`);
         res.end();
         return;
     }
 
-    const interests = (typeof interest === 'string' && interest.length > 0)
-        ? interest.split(',').map(i => i.trim().toUpperCase())
-        : [];
+    let interestArray: string[] = [];
+    if (typeof interests === 'string') {
+        interestArray = interests.split(',').map(interest => interest.trim()).filter(interest => interest.length > 0);
+    }
 
     const notificationChannel = `match_notification:${userId}`;
 
@@ -174,7 +175,7 @@ app.get('/matchmaking', async (req, res) => {
 
     // --- Execute Matchmaking Logic using the Service ---
     try {
-        const matchResult = await matchmakingService.findOrQueueUser(userId, interests);
+        const matchResult = await matchmakingService.findOrQueueUser(userId, interestArray);
 
         if (matchResult) {
             const { matchedUserId, interests: matchedInterests, chatId, chatServerUrl } = matchResult;
