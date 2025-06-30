@@ -69,6 +69,13 @@ const matchmakingService = new MatchmakingService(redis, getNextChatServer);
 
 addStatusEndpoint(redis, subscriber, MAINTENANCE_MODE, app);
 
+app.get("/", (req, res) => {
+    res.status(200).json({
+        message: "Welcome to the Matchmaking Service API. you shoulnd't be here :b",
+    })
+})
+
+
 /**
  * Endpoint to check the status of the matchmaking service.
  * This endpoint returns the current state of the matchmaking service, whether it is under maintenance or operational
