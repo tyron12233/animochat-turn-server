@@ -161,7 +161,10 @@ export async function startServiceRegistration() {
 
     // Set up a heartbeat to keep the service registered
     setInterval(async () => {
-        await registerService();
+        await registerService().catch((error => {
+            // Log the error but do not crash the service
+            console.error('Heartbeat failed:', (error as Error).message);
+        }))
     }, 5 * 60 * 1000); // Every 5 minutes
 
     // Handle graceful shutdown
