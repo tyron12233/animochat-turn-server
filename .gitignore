@@ -1,1 +1,6 @@
 ./elasticbeanstalk/
+.elasticbeanstalk
+_next/
+_next
+node_modules/
+
