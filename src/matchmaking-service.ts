@@ -122,7 +122,7 @@ export class MatchmakingService {
             const pipeline = this.redis.pipeline();
             const now = Date.now();
             interests.forEach(interest => {
-                pipeline.zadd(this.getPopularityKey(interest), now, `${userId}:${now}`);
+                pipeline.zadd(this.getPopularityKey(interest), now, userId);
                 pipeline.sadd(this.getAllInterestsKey(), interest);
             });
             await pipeline.exec();
@@ -321,12 +321,9 @@ export class MatchmakingService {
         const interests = await this.redis.smembers(userInterestsKey);
 
         if (!interests || interests.length === 0) {
-            // This can happen if the user was already matched and cleaned up, which is not an error.
-            console.log(`[Service] No queued interests found for user '${userId}'. No action needed for queue removal.`);
             return;
         }
 
-        console.log(`[Service] Removing user '${userId}' from queues for discovered interests: [${interests.join(', ')}].`);
         const pipeline = this.redis.pipeline();
         interests.forEach(interest => {
             pipeline.srem(this.getInterestKey(interest), userId);
