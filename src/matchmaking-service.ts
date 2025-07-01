@@ -321,6 +321,8 @@ export class MatchmakingService {
         await pipeline.exec();
     }
 
+
+
     /**
      * Finds the most popular interests based on usage within a specific time window (e.g., last 10 minutes).
      * @param topN The number of top interests to return.
@@ -340,6 +342,13 @@ export class MatchmakingService {
         if (allPopularityKeys.length === 0) {
             return [];
         }
+
+        // list of interests that should not be counted in popularity
+        // nsfw or other unwanted interests can be added here
+        const BLOCK_LISTED_INTERESTS = [
+            "FUBU", "FWB", "FUCK", "NUDE", "NUDES",
+            "SOP", "SOC"
+        ]
 
         const pipeline = this.redis.pipeline();
         const minTimestamp = Date.now() - this.popularityWindowMs;
@@ -377,6 +386,11 @@ export class MatchmakingService {
                         interestName = current.split(':')[1] || 'UNKNOWN';
                     }
                 }
+
+                if (BLOCK_LISTED_INTERESTS.includes(interestName)) {
+                    continue; // Skip blocked interests
+                }
+
                 interestsWithCounts.push({ interest: interestName, count });
             }
         }
