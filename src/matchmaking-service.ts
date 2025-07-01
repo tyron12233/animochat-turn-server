@@ -95,13 +95,10 @@ export class MatchmakingService {
         const isWildcard = !interests || interests.length === 0;
 
         if (isWildcard) {
-            console.log(`[Service] User '${userId}' is a wildcard search.`);
-
             const wildcardKey = this.getInterestKey(this.WILDCARD_INTEREST);
             const potentialMatchId = await this.redis.spop(wildcardKey);
 
             if (potentialMatchId && potentialMatchId !== userId) {
-                console.log(`[Service] Wildcard user '${userId}' matched with another wildcard user '${potentialMatchId}'.`);
                 await this.redis.del(this.getUserInterestsKey(potentialMatchId)); // Cleanup for matched wildcard user
                 const { chatId, chatServerUrl } = await this.createSessionForUsers(userId, potentialMatchId);
                 return { matchedUserId: potentialMatchId, interests: [], chatId, chatServerUrl };
@@ -110,7 +107,6 @@ export class MatchmakingService {
             }
 
             // 2. No match found, so add this user to the wildcard queue.
-            console.log(`[Service] No match for wildcard user '${userId}'. Adding to wildcard queue.`);
             const pipeline = this.redis.pipeline();
             pipeline.sadd(wildcardKey, userId);
             pipeline.sadd(this.getUserInterestsKey(userId), this.WILDCARD_INTEREST); // For cancellation
@@ -134,7 +130,7 @@ export class MatchmakingService {
                 const interestKey = this.getInterestKey(interest);
                 const potentialMatchId = await this.redis.spop(interestKey);
                 if (potentialMatchId && potentialMatchId !== userId) {
-                    console.log(`[Service] User '${userId}' got a direct match with '${potentialMatchId}' on interest '${interest}'`);
+
                     const matchedUserInterests = await this.redis.smembers(this.getUserInterestsKey(potentialMatchId));
                     const commonInterests = matchedUserInterests.filter(i => interests.includes(i));
 
@@ -151,8 +147,6 @@ export class MatchmakingService {
                 }
             }
 
-            // 2. No direct match found. Add user to their own interest queues.
-            console.log(`[Service] No match for '${userId}'. Adding to queues for interests: [${interests.join(', ')}].`);
             const queueingPipeline = this.redis.pipeline();
             interests.forEach(interest => {
                 queueingPipeline.sadd(this.getInterestKey(interest), userId);
@@ -171,7 +165,6 @@ export class MatchmakingService {
       * @param chatServerUrl The URL of the chat server assigned to this match.
       */
     public async notifyUserOfMatch(currentUserId: string, matchedUserId: string, interests: string[], chatId: string, chatServerUrl: string): Promise<void> {
-        console.log(`[Service] Notifying '${matchedUserId}' about match with ChatID '${chatId}' on server '${chatServerUrl}'`);
         const interest = interests.join(",");
         const payload = JSON.stringify({ state: 'MATCHED', matchedUserId: currentUserId, interest, chatId, chatServerUrl });
         await this.redis.publish(this.getNotificationChannel(matchedUserId), payload);
@@ -201,7 +194,6 @@ export class MatchmakingService {
         });
 
         await pipeline.exec();
-        console.log(`[Service] Stored persistent chat session '${chatId}' for participants [${participants.join(', ')}].`);
     }
 
     /**
@@ -251,7 +243,6 @@ export class MatchmakingService {
         const chatId = await this.redis.get(userSessionKey);
 
         if (!chatId) {
-            console.log(`[Service] No active session to disconnect for user '${userId}'.`);
             return false;
         }
 
@@ -259,7 +250,6 @@ export class MatchmakingService {
         const sessionDataJSON = await this.redis.get(chatSessionKey);
 
         if (!sessionDataJSON) {
-            console.log(`[Service] Session data for chat '${chatId}' not found, but user '${userId}' was mapped to it. Cleaning up stale mapping.`);
             await this.redis.del(userSessionKey);
             return false;
         }
@@ -276,8 +266,6 @@ export class MatchmakingService {
                 pipeline.del(this.getUserSessionKey(participantId));
             });
             await pipeline.exec();
-
-            console.log(`[Service] User '${userId}' ended chat session '${chatId}'. Session and participant mappings removed.`);
             return true;
         } catch (error) {
             console.error(`[Service] Error ending chat session '${chatId}':`, error);
@@ -339,8 +327,6 @@ export class MatchmakingService {
      * @returns A promise that resolves to an array of popular interests with their recent usage counts.
      */
     public async getPopularInterests(topN: number): Promise<{ interest: string; count: number }[]> {
-        console.log(`[Service] Fetching top ${topN} popular interests from the last ${this.popularityWindowMs / 60000} minutes.`);
-
         // Find all keys that track popularity
         const pattern = 'popular:*';
         let cursor = '0';

@@ -42,7 +42,6 @@ const getNextChatServer = async (): Promise<string> => {
     const now = Date.now();
 
     if (CHAT_SERVER_URLS.length === 0 || (now - lastChatServersUpdate) > CHAT_SERVERS_REFRESH_INTERVAL) {
-        console.log(`[${new Date().toISOString()}] Refreshing chat server URLs from discovery service...`);
 
         const chatServers = await getChatServices();
         // throw an error if no chat servers are available
@@ -100,11 +99,8 @@ app.post('/cancel_matchmaking', async (req, res) => {
         return res.status(400).json({ message: 'User ID is required in the request body.' });
     }
 
-
     try {
-        console.log(`[API] Request to cancel matchmaking for user '${userId}' received.`);
         await matchmakingService.removeUserFromQueue(userId);
-        console.log(`[API] User '${userId}' successfully removed from matchmaking queue.`);
         res.status(200).json({ message: 'Matchmaking cancelled successfully.' });
     } catch (error) {
         console.error(`[API] An error occurred while cancelling matchmaking for user '${userId}':`, error);
@@ -150,7 +146,6 @@ app.get('/matchmaking', async (req, res) => {
     // This function will be called when a match notification is published to this user's channel.
     const messageHandler = (channel: string, message: string) => {
         if (channel === notificationChannel) {
-            console.log(`[${userId}] Received match notification via Pub/Sub:`, message);
             res.write(`data: ${message}\n\n`);
             cleanup();
             res.end();
@@ -163,20 +158,17 @@ app.get('/matchmaking', async (req, res) => {
             res.status(500).end();
             return;
         }
-        console.log(`[${userId}] Subscribed to ${notificationChannel} for match notifications.`);
         subscriber.on('message', messageHandler);
     });
 
 
     const cleanup = () => {
-        console.log(`[${userId}] Cleaning up SSE resources.`);
         matchmakingService.removeUserFromQueue(userId);
         subscriber.unsubscribe(notificationChannel);
         subscriber.removeListener('message', messageHandler);
     };
 
     req.on('close', () => {
-        console.log(`[${userId}] Connection closed by client.`);
         cleanup();
     });
 
@@ -224,10 +216,8 @@ app.post('/session/disconnect', async (req, res) => {
         const wasSessionEnded = await matchmakingService.endChatSession(userId);
 
         if (wasSessionEnded) {
-            console.log(`[API] User '${userId}' successfully disconnected from their session.`);
             res.status(200).json({ message: 'Session disconnected successfully.' });
         } else {
-            console.log(`[API] User '${userId}' attempted to disconnect, but no active session was found.`);
             res.status(404).json({ message: 'No active session found to disconnect.' });
         }
     } catch (error) {
@@ -251,7 +241,6 @@ app.get('/interests/popular', async (req, res) => {
 
     const topN = 8;
     try {
-        console.log(`[API] Request received for top ${topN} popular interests.`);
         const popularInterests = await matchmakingService.getPopularInterests(topN);
         res.status(200).json(popularInterests);
     } catch (error) {
@@ -278,10 +267,8 @@ app.get('/session/:userId', async (req, res) => {
         const sessionDetails = await matchmakingService.getSessionForUser(userId);
 
         if (sessionDetails) {
-            console.log(`[API] Active session found for user '${userId}': ChatID ${sessionDetails.chatId}`);
             res.status(200).json(sessionDetails);
         } else {
-            console.log(`[API] No active session found for user '${userId}'.`);
             res.status(200).json({ message: 'No active session found for this user.' });
         }
     } catch (error) {

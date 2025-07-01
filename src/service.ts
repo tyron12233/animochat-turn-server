@@ -32,7 +32,6 @@ const registerService = async () => {
         if (!response.ok) {
             throw new Error(`Failed to register service. Status: ${response.status}`);
         }
-        console.log('Service registered/heartbeat sent successfully to discovery server.');
     } catch (error) {
         console.error('Failed to register service:', (error as Error).message);
     }
@@ -51,7 +50,6 @@ const unregisterService = async () => {
                 version: SERVICE_VERSION,
             }),
         });
-        console.log('Service unregistered successfully from discovery server.');
     } catch (error) {
         console.error('Failed to unregister service:', (error as Error).message);
     }
