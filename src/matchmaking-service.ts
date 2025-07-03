@@ -346,7 +346,7 @@ export class MatchmakingService {
         // list of interests that should not be counted in popularity
         // nsfw or other unwanted interests can be added here
         const BLOCK_LISTED_INTERESTS = [
-            "FUBU", "FWB", "FUCK", "NUDE", "NUDES",
+            "FUBU", "FWB", "FUCK", "FUCK BUDDY", "NUDE", "NUDES",
             "SOP", "SOC"
         ]
 
