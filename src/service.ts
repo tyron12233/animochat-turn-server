@@ -7,7 +7,7 @@ import os from 'os';
 // =================================================================================
 
 
-export const DISCOVERY_SERVER_URL = process.env.DISCOVERY_SERVER_URL || 'https://animochat-service-discovery-6jj5.onrender.com/services';
+export const DISCOVERY_SERVER_URL = process.env.DISCOVERY_SERVER_URL || 'https://animochat-service-discovery-6jj5.onrender.com';
 export const SERVICE_NAME = 'matchmaking-server';
 export const SERVICE_VERSION = '1.0.0';
 
